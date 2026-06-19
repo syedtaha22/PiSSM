@@ -1,0 +1,133 @@
+// nodes.proto
+//
+// Defines the gRPC service and messages for node heartbeat and status
+// management in the PiSSM cluster. Workers call Heartbeat periodically
+// to register themselves and report hardware state. The orchestrator
+// uses ReportStatus to query a specific worker on demand.
+
+syntax = "proto3";
+
+package pissm;
+
+// Heartbeat and status management for worker nodes in the cluster.
+// Workers send periodic heartbeats to register themselves and report
+// their current hardware state. The orchestrator tracks these in a
+// node registry and marks nodes as unavailable after missed heartbeats.
+service NodeService {
+  // Sent by a worker to the orchestrator at a configurable interval
+  // (default 2 seconds). If the node is new, it is registered in the
+  // node registry. If it already exists, its last-seen timestamp and
+  // hardware state are updated. A node previously marked UNAVAILABLE
+  // is automatically restored to AVAILABLE on the next heartbeat.
+  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+
+  // Called by the orchestrator to query a specific worker's current
+  // status on demand. Returns the node's hardware info, availability
+  // status, and last heartbeat timestamp.
+  rpc ReportStatus (StatusRequest) returns (StatusResponse);
+}
+
+// Payload sent by a worker on each heartbeat. Contains both dynamic
+// fields (available_ram_mb, timestamp) that change between heartbeats
+// and static hardware fields (total_ram_mb, cpu_count, arch, os_name,
+// os_version) that remain constant for the lifetime of the node.
+message HeartbeatRequest {
+  // Unique identifier for the node, typically the hostname.
+  string node_id = 1;
+
+  // The node's reachable IP address on the cluster network.
+  string ip_address = 2;
+
+  // Currently available RAM in megabytes. This value changes between
+  // heartbeats as the node loads or unloads model shards.
+  uint32 available_ram_mb = 3;
+
+  // Total physical RAM in megabytes. Static for the lifetime of the node.
+  uint32 total_ram_mb = 4;
+
+  // Number of logical CPU cores. Static for the lifetime of the node.
+  uint32 cpu_count = 5;
+
+  // CPU architecture string, e.g. "aarch64" on Raspberry Pi 5,
+  // "x86_64" on a development laptop.
+  string arch = 6;
+
+  // Operating system name, e.g. "Linux".
+  string os_name = 7;
+
+  // OS kernel version string, e.g. "6.6.31+rpt-rpi-2712".
+  string os_version = 8;
+
+  // Unix timestamp in seconds when this heartbeat was generated.
+  // The orchestrator primarily uses its own receive time for timeout
+  // calculations, but this field can be used to detect clock skew.
+  uint64 timestamp = 9;
+}
+
+// Response returned by the orchestrator after processing a heartbeat.
+message HeartbeatResponse {
+  // True if the orchestrator successfully processed the heartbeat.
+  bool acknowledged = 1;
+
+  // The heartbeat interval the worker should use, in milliseconds.
+  // Allows the orchestrator to dynamically adjust the heartbeat rate.
+  uint32 heartbeat_interval_ms = 2;
+}
+
+// Request to query a specific node's current status.
+message StatusRequest {
+  // The node_id of the worker to query.
+  string node_id = 1;
+}
+
+// Full snapshot of a node's current state, returned by ReportStatus.
+message StatusResponse {
+  // Unique identifier for the node.
+  string node_id = 1;
+
+  // The node's reachable IP address on the cluster network.
+  string ip_address = 2;
+
+  // Currently available RAM in megabytes.
+  uint32 available_ram_mb = 3;
+
+  // Total physical RAM in megabytes.
+  uint32 total_ram_mb = 4;
+
+  // Number of logical CPU cores.
+  uint32 cpu_count = 5;
+
+  // CPU architecture string, e.g. "aarch64", "x86_64".
+  string arch = 6;
+
+  // Operating system name, e.g. "Linux".
+  string os_name = 7;
+
+  // OS kernel version string.
+  string os_version = 8;
+
+  // Current availability status of the node.
+  NodeStatus status = 9;
+
+  // Unix timestamp of the most recent heartbeat received from this node.
+  uint64 last_heartbeat = 10;
+
+  // Number of model shards currently loaded in the node's memory.
+  uint32 loaded_shards = 11;
+}
+
+// Availability status of a worker node in the cluster.
+enum NodeStatus {
+  // Default value. The node's status has not been determined.
+  UNKNOWN = 0;
+
+  // The node is online and available to accept work.
+  AVAILABLE = 1;
+
+  // The node is currently executing an inference shard.
+  BUSY = 2;
+
+  // The node has missed three or more consecutive heartbeats
+  // and is excluded from dispatch decisions.
+  UNAVAILABLE = 3;
+}

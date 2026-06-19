@@ -70,6 +70,50 @@ tokenizer: tokenizer.json
 | WebUI | React |
 | Config | YAML |
 
+## Getting Started
+
+### Prerequisites
+
+- Python 3.11 or later
+- pip
+
+### Setup
+
+```bash
+git clone https://github.com/syedtaha22/PiSSM.git
+cd PiSSM
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+# For development (includes pytest, black, ruff)
+pip install -e ".[dev]"
+
+# For running only (no dev tools)
+pip install .
+```
+
+### Generate gRPC Stubs
+
+After cloning or any time a `.proto` file changes:
+
+```bash
+make proto
+```
+
+### Run Tests
+
+```bash
+make test
+```
+
+### Format and Lint
+
+```bash
+make format   # auto-format with black
+make lint     # check with ruff + black
+```
+
 ## Status
 
 Active development. See `docs/SRS.md` for full system specification and `docs/Summer_Sprint.md` for current sprint scope.
