@@ -95,3 +95,19 @@ Component under test: `orchestrator.node_registry.NodeRegistry` - a thread-safe 
 | TC-FD-04 | FR-NM-03 | TestFailureDetection | Timeout calculation | Verify that timeout_s equals heartbeat_interval_s * missed_threshold. | None. | heartbeat_interval_s=2.0, missed_threshold=3. | 1. Create registry with given parameters. 2. Read `timeout_s`. | timeout_s == 6.0. |
 | TC-AR-01 | FR-NM-05 | TestAutoRejoin | Rejoin after unavailable | Verify that a previously unavailable node is restored to available on a new heartbeat. | Registry with heartbeat_interval=2.0s, missed_threshold=3 (timeout=6.0s), mock clock at t=0.0. | One node: node-1. | 1. Register at t=0. 2. Advance by 7.0s. 3. Reap. 4. Advance by 1.0s. 5. Register again. 6. Call `get_node("node-1")`. | status="available", last_heartbeat=8.0, first_seen=0.0. |
 | TC-TS-01 | NFR-02 | TestThreadSafety | Concurrent updates | Verify that 10 threads updating different nodes simultaneously causes no corruption. | Empty registry with default clock. | 10 threads, each updating a unique node_id 100 times. | 1. Create empty registry. 2. Spawn 10 threads. 3. Join all. 4. Check for exceptions. 5. Call `list_nodes()`. | No exceptions. Registry contains exactly 10 nodes. |
+
+### System Info (`tests/unit/test_system_info.py`)
+
+Component under test: `worker.system_info` - functions that gather node identity and hardware state for heartbeat payloads. These wrap `socket`, `platform`, and `psutil` calls.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-SI-01 | FR-NM-01 | TestNodeIdentity | Node ID is non-empty string | Verify that get_node_id returns a non-empty string. | None. | None. | 1. Call `get_node_id()`. | Returns a non-empty string. |
+| TC-SI-02 | FR-NM-01 | TestNodeIdentity | IP address is valid IPv4 | Verify that get_ip_address returns a dotted-quad IPv4 string. | Network connectivity. | None. | 1. Call `get_ip_address()`. 2. Split by ".". 3. Validate each octet. | Four octets, each 0-255. |
+| TC-SI-03 | FR-NM-02 | TestMemoryInfo | Available RAM is positive int | Verify that get_available_ram_mb returns a positive integer. | None. | None. | 1. Call `get_available_ram_mb()`. | Returns int > 0. |
+| TC-SI-04 | FR-NM-02 | TestMemoryInfo | Total RAM is positive int | Verify that get_total_ram_mb returns a positive integer. | None. | None. | 1. Call `get_total_ram_mb()`. | Returns int > 0. |
+| TC-SI-05 | FR-NM-02 | TestMemoryInfo | Available RAM does not exceed total | Verify that available RAM is less than or equal to total RAM. | None. | None. | 1. Call both functions. 2. Compare. | available <= total. |
+| TC-SI-06 | FR-NM-02 | TestHardwareInfo | CPU count is positive int | Verify that get_cpu_count returns a positive integer. | None. | None. | 1. Call `get_cpu_count()`. | Returns int > 0. |
+| TC-SI-07 | FR-NM-02 | TestHardwareInfo | Architecture is non-empty string | Verify that get_arch returns a non-empty string. | None. | None. | 1. Call `get_arch()`. | Returns non-empty string. |
+| TC-SI-08 | FR-NM-02 | TestOSInfo | OS name is non-empty string | Verify that get_os_name returns a non-empty string. | None. | None. | 1. Call `get_os_name()`. | Returns non-empty string. |
+| TC-SI-09 | FR-NM-02 | TestOSInfo | OS version is non-empty string | Verify that get_os_version returns a non-empty string. | None. | None. | 1. Call `get_os_version()`. | Returns non-empty string. |
