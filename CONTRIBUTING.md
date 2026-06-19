@@ -58,7 +58,7 @@ Each commit should represent one logical, self-contained change. Use the followi
 ### Rules
 
 - Subject line must be under 72 characters
-- Use imperative mood: "Add", "Fix", "Update" — not "Added" or "Fixes"
+- Use imperative mood: "Add", "Fix", "Update" - not "Added" or "Fixes"
 - No trailing period on the subject line
 - Use the body to explain *why*, not *what*, when the subject alone is insufficient
 - Avoid vague messages like "update files" or "changes done"
@@ -79,7 +79,7 @@ docs: update manifest format specification in SRS
 ## 4. Pull Requests
 
 - Fill out the pull request template in full
-- Keep PRs focused — one feature or fix per PR
+- Keep PRs focused - one feature or fix per PR
 - Changes touching the worker daemon, dispatch engine, or gRPC layer must be tested on Raspberry Pi hardware before submission
 - All PRs require at least one review before merge
 
@@ -129,7 +129,7 @@ def load_shard(manifest_path: str, layer_range: tuple[int, int]) -> nn.Module:
 
 - One service definition per `.proto` file
 - Field names in `snake_case`
-- Keep service interfaces minimal — only expose what the orchestrator and workers require at the gRPC boundary
+- Keep service interfaces minimal - only expose what the orchestrator and workers require at the gRPC boundary
 
 ---
 

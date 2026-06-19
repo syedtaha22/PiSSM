@@ -2,13 +2,13 @@
 <!-- What does this PR do and why? -->
 
 ## Type of Change
-- [ ] `feat` — new feature or capability
-- [ ] `fix` — bug fix
-- [ ] `perf` — performance improvement
-- [ ] `refactor` — structural change, no behavior change
-- [ ] `docs` — documentation only
-- [ ] `chore` — dependencies, config, tooling
-- [ ] `research` — experimental or benchmark work
+- [ ] `feat` - new feature or capability
+- [ ] `fix` - bug fix
+- [ ] `perf` - performance improvement
+- [ ] `refactor` - structural change, no behavior change
+- [ ] `docs` - documentation only
+- [ ] `chore` - dependencies, config, tooling
+- [ ] `research` - experimental or benchmark work
 
 ## Related Issues
 Closes #
