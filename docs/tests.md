@@ -111,3 +111,16 @@ Component under test: `worker.system_info` - functions that gather node identity
 | TC-SI-07 | FR-NM-02 | TestHardwareInfo | Architecture is non-empty string | Verify that get_arch returns a non-empty string. | None. | None. | 1. Call `get_arch()`. | Returns non-empty string. |
 | TC-SI-08 | FR-NM-02 | TestOSInfo | OS name is non-empty string | Verify that get_os_name returns a non-empty string. | None. | None. | 1. Call `get_os_name()`. | Returns non-empty string. |
 | TC-SI-09 | FR-NM-02 | TestOSInfo | OS version is non-empty string | Verify that get_os_version returns a non-empty string. | None. | None. | 1. Call `get_os_version()`. | Returns non-empty string. |
+
+### NodeServiceServicer (`tests/unit/test_heartbeat_service.py`)
+
+Component under test: `orchestrator.service.NodeServiceServicer` - gRPC handler that bridges heartbeat and status requests to the NodeRegistry. Tests call servicer methods directly with mock context objects, no network I/O.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-HS-01 | FR-NM-01 | TestHeartbeatRPC | Heartbeat returns acknowledged | Verify that a valid heartbeat returns acknowledged=True. | Empty registry. | Default heartbeat request. | 1. Create servicer with empty registry. 2. Call `Heartbeat` with request. | response.acknowledged is True. |
+| TC-HS-02 | FR-NM-02 | TestHeartbeatRPC | Heartbeat registers node | Verify that after a heartbeat the node exists in the registry with correct fields. | Empty registry. | node_id="node-1", ip="192.168.1.10", available_ram=3800, total_ram=4096, cpu_count=4, arch="aarch64". | 1. Call `Heartbeat`. 2. Call `registry.get_node("node-1")`. | Node exists with all fields matching, status="available". |
+| TC-HS-03 | FR-NM-01 | TestHeartbeatRPC | Heartbeat returns configured interval | Verify that the response carries the heartbeat interval configured on the servicer. | Empty registry, servicer with heartbeat_interval_ms=5000. | Default heartbeat request. | 1. Create servicer with interval=5000. 2. Call `Heartbeat`. | response.heartbeat_interval_ms == 5000. |
+| TC-HS-04 | FR-NM-01 | TestHeartbeatRPC | Heartbeat default interval | Verify that the default heartbeat interval is 2000ms. | Empty registry. | Default heartbeat request. | 1. Create servicer with default config. 2. Call `Heartbeat`. | response.heartbeat_interval_ms == 2000. |
+| TC-HS-05 | FR-NM-04 | TestReportStatusRPC | ReportStatus returns correct fields | Verify that ReportStatus returns all node fields for a known node. | Registry with one node registered via Heartbeat. | node_id="node-1". | 1. Send Heartbeat. 2. Call `ReportStatus(node_id="node-1")`. | All fields match, status=AVAILABLE. |
+| TC-HS-06 | FR-NM-04 | TestReportStatusRPC | ReportStatus unknown node | Verify that ReportStatus sets NOT_FOUND for an unknown node. | Empty registry. | node_id="nonexistent". | 1. Call `ReportStatus(node_id="nonexistent")`. | context.set_code called with NOT_FOUND, context.set_details called. |
