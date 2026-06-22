@@ -27,6 +27,9 @@ dev = [
 pissm-orchestrator = "orchestrator.server:main"
 pissm-worker = "worker.daemon:main"
 
+[tool.setuptools.packages.find]
+include = ["orchestrator*", "worker*", "proto*"]
+
 [tool.black]
 line-length = 88
 target-version = ["py311"]
