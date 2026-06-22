@@ -125,6 +125,17 @@ Component under test: `orchestrator.service.NodeServiceServicer` - gRPC handler 
 | TC-HS-05 | FR-NM-04 | TestReportStatusRPC | ReportStatus returns correct fields | Verify that ReportStatus returns all node fields for a known node. | Registry with one node registered via Heartbeat. | node_id="node-1". | 1. Send Heartbeat. 2. Call `ReportStatus(node_id="node-1")`. | All fields match, status=AVAILABLE. |
 | TC-HS-06 | FR-NM-04 | TestReportStatusRPC | ReportStatus unknown node | Verify that ReportStatus sets NOT_FOUND for an unknown node. | Empty registry. | node_id="nonexistent". | 1. Call `ReportStatus(node_id="nonexistent")`. | context.set_code called with NOT_FOUND, context.set_details called. |
 
+### HeartbeatClient (`tests/unit/test_heartbeat_client.py`)
+
+Component under test: `worker.heartbeat.HeartbeatClient` - periodically sends gRPC heartbeats to the orchestrator from a background thread. Each test creates its own in-process gRPC server with a matching heartbeat interval so the server does not override the client's test interval.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-HC-01 | FR-NM-01 | TestHeartbeatClientLifecycle | Client sends heartbeat | Verify the client sends at least one heartbeat after starting. | In-process gRPC server with interval=200ms. | node_id="test-node", interval=0.2s. | 1. Start client. 2. Wait 0.5s. 3. Stop client. 4. Check registry. | Node exists with status="available". |
+| TC-HC-02 | FR-NM-01 | TestHeartbeatClientLifecycle | Client stops cleanly | Verify that after stop(), is_running is False. | In-process gRPC server with interval=200ms. | node_id="test-node", interval=0.2s. | 1. Start client. 2. Assert is_running=True. 3. Stop client. | is_running is False. |
+| TC-HC-03 | FR-NM-01 | TestHeartbeatClientLifecycle | Client sends multiple heartbeats | Verify heartbeats continue periodically, not just on startup. | In-process gRPC server with interval=200ms. | node_id="test-node", interval=0.2s. | 1. Start client. 2. Wait 1.0s. 3. Read last_heartbeat. 4. Compare to current time. | last_heartbeat is within 0.5s of current time. |
+| TC-HC-04 | NFR-02 | TestHeartbeatClientResilience | Client handles server unavailable | Verify the client does not crash when the orchestrator is unreachable. | No server running on target port. | orchestrator_address="localhost:1", interval=0.2s. | 1. Start client. 2. Wait 0.5s. 3. Stop client. | is_running is False, no exceptions. |
+
 ## Integration Tests
 
 ### Heartbeat Flow (`tests/integration/test_heartbeat_flow.py`)
