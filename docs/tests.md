@@ -124,3 +124,18 @@ Component under test: `orchestrator.service.NodeServiceServicer` - gRPC handler 
 | TC-HS-04 | FR-NM-01 | TestHeartbeatRPC | Heartbeat default interval | Verify that the default heartbeat interval is 2000ms. | Empty registry. | Default heartbeat request. | 1. Create servicer with default config. 2. Call `Heartbeat`. | response.heartbeat_interval_ms == 2000. |
 | TC-HS-05 | FR-NM-04 | TestReportStatusRPC | ReportStatus returns correct fields | Verify that ReportStatus returns all node fields for a known node. | Registry with one node registered via Heartbeat. | node_id="node-1". | 1. Send Heartbeat. 2. Call `ReportStatus(node_id="node-1")`. | All fields match, status=AVAILABLE. |
 | TC-HS-06 | FR-NM-04 | TestReportStatusRPC | ReportStatus unknown node | Verify that ReportStatus sets NOT_FOUND for an unknown node. | Empty registry. | node_id="nonexistent". | 1. Call `ReportStatus(node_id="nonexistent")`. | context.set_code called with NOT_FOUND, context.set_details called. |
+
+## Integration Tests
+
+### Heartbeat Flow (`tests/integration/test_heartbeat_flow.py`)
+
+Tests the full gRPC roundtrip - real server on localhost, real channel, real protobuf serialization. Validates that heartbeats sent over the wire reach the registry correctly.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-HF-01 | FR-NM-01 | TestHeartbeatRoundtrip | Heartbeat acknowledged over gRPC | Verify a heartbeat sent through a real gRPC channel returns acknowledged. | In-process gRPC server running. | Default heartbeat request. | 1. Create stub from channel. 2. Call `stub.Heartbeat()`. | acknowledged=True, heartbeat_interval_ms=2000. |
+| TC-HF-02 | FR-NM-02 | TestHeartbeatRoundtrip | Multiple heartbeats same node | Verify multiple heartbeats from the same node produce one registry entry. | In-process gRPC server running. | 3 heartbeats with node_id="node-1". | 1. Send 3 heartbeats with same node_id. 2. Call `registry.list_nodes()`. | 1 node in registry. |
+| TC-HF-03 | FR-NM-02 | TestHeartbeatRoundtrip | Two different nodes | Verify heartbeats from two nodes create two registry entries. | In-process gRPC server running. | node-1 and node-2 with different IPs. | 1. Send heartbeat for node-1. 2. Send heartbeat for node-2. 3. Call `registry.list_nodes()`. | 2 nodes, IDs {"node-1", "node-2"}. |
+| TC-HF-04 | FR-NM-02 | TestHeartbeatRoundtrip | Heartbeat data reaches registry | Verify all fields survive gRPC serialization and reach the registry. | In-process gRPC server running. | Full heartbeat request with all fields set. | 1. Send heartbeat. 2. Call `registry.get_node("node-1")`. | All fields match request, status="available". |
+| TC-HF-05 | FR-NM-04 | TestReportStatusRoundtrip | ReportStatus known node over gRPC | Verify ReportStatus returns correct fields over a real gRPC channel. | In-process gRPC server, one node registered. | node_id="node-1". | 1. Send heartbeat. 2. Call `stub.ReportStatus()`. | Fields match, status=AVAILABLE. |
+| TC-HF-06 | FR-NM-04 | TestReportStatusRoundtrip | ReportStatus unknown node raises | Verify ReportStatus raises gRPC NOT_FOUND for unknown nodes. | In-process gRPC server, empty registry. | node_id="nonexistent". | 1. Call `stub.ReportStatus()`. | Raises RpcError with code NOT_FOUND. |
