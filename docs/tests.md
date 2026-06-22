@@ -150,3 +150,13 @@ Tests the full gRPC roundtrip - real server on localhost, real channel, real pro
 | TC-HF-04 | FR-NM-02 | TestHeartbeatRoundtrip | Heartbeat data reaches registry | Verify all fields survive gRPC serialization and reach the registry. | In-process gRPC server running. | Full heartbeat request with all fields set. | 1. Send heartbeat. 2. Call `registry.get_node("node-1")`. | All fields match request, status="available". |
 | TC-HF-05 | FR-NM-04 | TestReportStatusRoundtrip | ReportStatus known node over gRPC | Verify ReportStatus returns correct fields over a real gRPC channel. | In-process gRPC server, one node registered. | node_id="node-1". | 1. Send heartbeat. 2. Call `stub.ReportStatus()`. | Fields match, status=AVAILABLE. |
 | TC-HF-06 | FR-NM-04 | TestReportStatusRoundtrip | ReportStatus unknown node raises | Verify ReportStatus raises gRPC NOT_FOUND for unknown nodes. | In-process gRPC server, empty registry. | node_id="nonexistent". | 1. Call `stub.ReportStatus()`. | Raises RpcError with code NOT_FOUND. |
+
+### Failure Detection and End-to-End (`tests/integration/test_failure_detection.py`)
+
+Tests the full orchestrator lifecycle: gRPC server + reaper thread + HeartbeatClients, all in-process. Short intervals (0.1s heartbeat, 0.3s timeout, 0.05s reaper) keep tests fast.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-FD-05 | FR-NM-03 | TestFailureDetection | Node drops after missed heartbeats | Verify a node that stops heartbeating is marked unavailable by the reaper. | Full orchestrator running (server + reaper). | node_id="node-1", interval=0.1s, timeout=0.3s. | 1. Start orchestrator. 2. Start client. 3. Wait 0.3s, verify available. 4. Stop client. 5. Wait for timeout. | Node status is "unavailable". |
+| TC-FD-06 | FR-NM-05 | TestFailureDetection | Node rejoins after restart | Verify a previously unavailable node is restored when it resumes heartbeating. | Full orchestrator running, one node previously reaped. | node_id="node-1", interval=0.1s. | 1. Start client, wait, stop. 2. Wait for reap. 3. Start new client with same node_id. 4. Wait 0.3s. | Node status is "available". |
+| TC-E2E-01 | FR-NM-01, FR-NM-02, FR-NM-03 | TestEndToEnd | Two workers, one dies | Sprint acceptance test: two workers register, one is killed, the dead one is reaped, the live one stays available. | Full orchestrator running. | worker-1 and worker-2, interval=0.1s. | 1. Start both clients. 2. Wait 0.3s, verify 2 available. 3. Stop worker-2. 4. Wait for timeout. | worker-1 available, worker-2 unavailable. |
