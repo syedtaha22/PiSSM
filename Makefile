@@ -20,6 +20,6 @@ run-worker: proto
 	python3 -m worker.daemon
 
 clean:
-	rm -rf proto/generated/
-	rm -rf build/ *.egg-info/
-	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	rm -rvf proto/generated/
+	rm -rvf build/ *.egg-info/
+	find . -type d -name __pycache__ -exec rm -rvf {} +
