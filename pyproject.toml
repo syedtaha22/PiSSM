@@ -15,12 +15,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+inference = [
+    "torch>=2.2.0",
+    "transformers>=4.39.0",
+    "pyyaml>=6.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "grpcio-testing>=1.62.0",
     "black>=24.0.0",
     "ruff>=0.3.0",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
@@ -28,7 +34,7 @@ pissm-orchestrator = "orchestrator.server:main"
 pissm-worker = "worker.daemon:main"
 
 [tool.setuptools.packages.find]
-include = ["orchestrator*", "worker*", "proto*"]
+include = ["orchestrator*", "worker*", "proto*", "inference*"]
 
 [tool.black]
 line-length = 88
@@ -40,6 +46,9 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+markers = [
+    "slow: marks tests that download models or run inference (deselect with '-m \"not slow\"')",
+]
 
 [tool.ruff]
 line-length = 88
