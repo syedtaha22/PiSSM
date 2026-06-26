@@ -22,6 +22,13 @@ venv/
 *.swo
 *~
 
+# Agents
+# .claude
+
 # OS
 .DS_Store
 Thumbs.db
+
+# docs, plans, temporary files
+docs/plans/
+temp/
