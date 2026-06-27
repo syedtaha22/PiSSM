@@ -167,6 +167,19 @@ Component under test: `inference.model_registry.ModelRegistry` - thread-safe in-
 | TC-MR-07 | FR-MR-05 | TestDeleteModel | Delete nonexistent | Verify deleting a nonexistent model returns False. | Empty registry. | name="nonexistent". | 1. Call `delete("nonexistent")`. | Returns False. |
 | TC-MR-08 | NFR-02 | TestThreadSafety | Concurrent register | Verify 20 threads registering different models causes no corruption. | Empty registry. | 20 unique model names. | 1. Spawn 20 threads. 2. Join. 3. Call `list_models()`. | No exceptions, 20 models in registry. |
 
+### Tensor Serialization (`tests/unit/test_tensor_utils.py`)
+
+Component under test: `inference.tensor_utils` - serializes PyTorch tensors to raw bytes with shape and dtype metadata for gRPC transport, and reconstructs them on the receiving side. Requires torch, no model download.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-TU-01 | FR-IE-04 | TestRoundtrip | Roundtrip float32 | Verify a float32 tensor survives serialize-deserialize with correct values. | None. | [1.0, 2.5, -3.7] float32. | 1. Serialize. 2. Deserialize. 3. Compare. | Values match, dtype is float32. |
+| TC-TU-02 | FR-IE-04 | TestRoundtrip | Roundtrip int64 | Verify an int64 tensor (token IDs) survives roundtrip. | None. | [101, 2023, 3045, 0] int64. | 1. Serialize. 2. Deserialize. 3. Compare. | Values match, dtype is int64. |
+| TC-TU-03 | FR-IE-04 | TestRoundtrip | Roundtrip 2D | Verify a 2D tensor shape (1, 128) is preserved. | None. | Random int64 (1, 128). | 1. Serialize. 2. Deserialize. 3. Check shape. | Shape is (1, 128), values match. |
+| TC-TU-04 | FR-IE-04 | TestRoundtrip | Roundtrip 3D | Verify a 3D tensor shape (1, 128, 768) is preserved. | None. | Random float32 (1, 128, 768). | 1. Serialize. 2. Deserialize. 3. Check shape. | Shape is (1, 128, 768), values match. |
+| TC-TU-05 | FR-IE-04 | TestErrors | Unknown dtype raises | Verify unsupported dtype string raises ValueError. | None. | dtype_str="torch.bfloat16". | 1. Call `deserialize_tensor` with unsupported dtype. | Raises ValueError matching "dtype". |
+| TC-TU-06 | FR-IE-04 | TestErrors | Shape mismatch raises | Verify mismatched data size and shape raises ValueError. | None. | 3-element float32 data, shape=[10]. | 1. Serialize 3 floats. 2. Deserialize with shape [10]. | Raises ValueError. |
+
 ## Integration Tests
 
 ### Heartbeat Flow (`tests/integration/test_heartbeat_flow.py`)
