@@ -136,6 +136,37 @@ Component under test: `worker.heartbeat.HeartbeatClient` - periodically sends gR
 | TC-HC-03 | FR-NM-01 | TestHeartbeatClientLifecycle | Client sends multiple heartbeats | Verify heartbeats continue periodically, not just on startup. | In-process gRPC server with interval=200ms. | node_id="test-node", interval=0.2s. | 1. Start client. 2. Wait 1.0s. 3. Read last_heartbeat. 4. Compare to current time. | last_heartbeat is within 0.5s of current time. |
 | TC-HC-04 | NFR-02 | TestHeartbeatClientResilience | Client handles server unavailable | Verify the client does not crash when the orchestrator is unreachable. | No server running on target port. | orchestrator_address="localhost:1", interval=0.2s. | 1. Start client. 2. Wait 0.5s. 3. Stop client. | is_running is False, no exceptions. |
 
+### Model Manifest (`tests/unit/test_manifest.py`)
+
+Component under test: `inference.manifest` - YAML manifest parsing and validation. No torch dependency. Uses pytest `tmp_path` for temporary YAML files.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-MF-01 | FR-MR-01 | TestLoadValidManifest | Load valid manifest | Verify a valid YAML produces a ModelManifest with all fields. | None. | Full valid manifest data. | 1. Write YAML to tmp file. 2. Call `load_manifest()`. | All 8 fields match input. |
+| TC-MF-02 | FR-MR-01 | TestLoadValidManifest | Manifest is frozen | Verify ModelManifest is immutable. | None. | Valid manifest. | 1. Load manifest. 2. Try to assign a field. | Raises AttributeError. |
+| TC-MF-03 | FR-MR-03 | TestMissingFields | Missing required field (parametrized x8) | Verify each missing required field raises ManifestError. | None. | Manifest with one field removed. | 1. Remove field. 2. Call `load_manifest()`. | Raises ManifestError matching field name. |
+| TC-MF-04 | FR-MR-03 | TestInvalidValues | Unsupported arch | Verify unsupported architecture raises ManifestError. | None. | arch="rnn". | 1. Call `load_manifest()`. | Raises ManifestError matching "arch". |
+| TC-MF-05 | FR-MR-03 | TestInvalidValues | Unsupported input type | Verify unsupported input type raises ManifestError. | None. | input_type="video". | 1. Call `load_manifest()`. | Raises ManifestError matching "input_type". |
+| TC-MF-06 | FR-MR-03 | TestInvalidValues | Layers zero | Verify zero layers raises ManifestError. | None. | layers=0. | 1. Call `load_manifest()`. | Raises ManifestError matching "layers". |
+| TC-MF-07 | FR-MR-03 | TestInvalidValues | Layers negative | Verify negative layers raises ManifestError. | None. | layers=-1. | 1. Call `load_manifest()`. | Raises ManifestError matching "layers". |
+| TC-MF-08 | FR-MR-03 | TestInvalidValues | Name with spaces | Verify name with spaces raises ManifestError. | None. | name="my model". | 1. Call `load_manifest()`. | Raises ManifestError matching "name". |
+| TC-MF-09 | FR-MR-03 | TestFileErrors | File not found | Verify nonexistent path raises ManifestError. | None. | path="/nonexistent/manifest.yaml". | 1. Call `load_manifest()`. | Raises ManifestError matching "not found". |
+
+### Model Registry (`tests/unit/test_model_registry.py`)
+
+Component under test: `inference.model_registry.ModelRegistry` - thread-safe in-memory store of validated model manifests. No torch dependency.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-MR-01 | FR-MR-01 | TestRegisterAndGet | Register and get | Verify a registered manifest can be retrieved by name. | Empty registry. | Valid manifest. | 1. Register manifest. 2. Call `get(name)`. | Returns manifest with matching fields. |
+| TC-MR-02 | FR-MR-01 | TestRegisterAndGet | Duplicate raises | Verify registering the same name twice raises ValueError. | Registry with one model. | Same manifest. | 1. Register. 2. Register again. | Raises ValueError matching model name. |
+| TC-MR-03 | FR-MR-01 | TestRegisterAndGet | Get unknown | Verify looking up an unregistered model returns None. | Empty registry. | name="nonexistent". | 1. Call `get("nonexistent")`. | Returns None. |
+| TC-MR-04 | FR-MR-04 | TestListModels | List empty | Verify empty registry returns empty list. | Empty registry. | None. | 1. Call `list_models()`. | Returns []. |
+| TC-MR-05 | FR-MR-04 | TestListModels | List all | Verify all registered models are returned. | Empty registry. | 3 models. | 1. Register 3 models. 2. Call `list_models()`. | Returns 3 items with correct names. |
+| TC-MR-06 | FR-MR-05 | TestDeleteModel | Delete existing | Verify deleting an existing model returns True and removes it. | Registry with one model. | name="mamba-130m". | 1. Delete. 2. Call `get(name)`. | Returns True, get returns None. |
+| TC-MR-07 | FR-MR-05 | TestDeleteModel | Delete nonexistent | Verify deleting a nonexistent model returns False. | Empty registry. | name="nonexistent". | 1. Call `delete("nonexistent")`. | Returns False. |
+| TC-MR-08 | NFR-02 | TestThreadSafety | Concurrent register | Verify 20 threads registering different models causes no corruption. | Empty registry. | 20 unique model names. | 1. Spawn 20 threads. 2. Join. 3. Call `list_models()`. | No exceptions, 20 models in registry. |
+
 ## Integration Tests
 
 ### Heartbeat Flow (`tests/integration/test_heartbeat_flow.py`)
