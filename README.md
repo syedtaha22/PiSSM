@@ -110,8 +110,8 @@ make test
 ### Format and Lint
 
 ```bash
-make format   # auto-format with black
 make lint     # check with ruff + black
+make format   # auto-format with black
 ```
 
 ## Status
