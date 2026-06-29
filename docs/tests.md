@@ -192,6 +192,23 @@ Component under test: `inference.loader` - loads HuggingFace models and tokenize
 | TC-ML-04 | FR-IE-01 | TestLoadModel | Load sets CPU | Verify the model is moved to CPU after loading. | Mocked model class. | Default manifest. | 1. Call `load_model`. 2. Check mock. | `model.to("cpu")` called once. |
 | TC-ML-05 | FR-IE-01 | TestUnloadModel | Unload clears references | Verify unloading sets model and tokenizer to None. | ModelHandle with mock model/tokenizer. | None. | 1. Call `unload_model`. 2. Check handle. | model is None, tokenizer is None. |
 
+### InferenceServiceServicer (`tests/unit/test_inference_service.py`)
+
+Component under test: `inference.service.InferenceServiceServicer` - gRPC handler that bridges LoadShard/RunShard/UnloadShard requests to the model loader. Unit tests mock the loader via `patch("inference.service.load_model")` to avoid model downloads.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-IS-01 | FR-IE-01 | TestLoadShard | Load shard success | Verify LoadShard with valid parameters returns success. | Mocked loader. | Default load request. | 1. Call `LoadShard`. | success=True, memory_used_mb=260, layers_loaded=24. |
+| TC-IS-02 | FR-IE-01 | TestLoadShard | Load shard stores model | Verify the model is stored in the servicer's internal dict. | Mocked loader. | Default load request. | 1. Call `LoadShard`. 2. Check `_models`. | Model present in dict. |
+| TC-IS-03 | FR-IE-01 | TestLoadShard | Load shard duplicate rejects | Verify loading the same name twice returns failure. | Mocked loader, one model loaded. | Same model name twice. | 1. Load. 2. Load again. | success=False, "already loaded". |
+| TC-IS-04 | FR-IE-01 | TestLoadShard | Load shard failure | Verify loader exceptions produce success=False with error message. | Mocked loader raises. | arch="s4". | 1. Call `LoadShard`. | success=False, error contains "s4". |
+| TC-IS-05 | FR-IE-04 | TestRunShard | Run shard model not loaded | Verify RunShard for unloaded model sets NOT_FOUND. | Empty servicer. | model_name="mamba-130m". | 1. Call `RunShard`. | success=False, context.set_code(NOT_FOUND). |
+| TC-IS-06 | FR-IE-04 | TestRunShard | Run shard generate mode | Verify RunShard in generate mode returns output tensor. | Mocked loader, model loaded, mock model.generate. | generate_mode=True. | 1. Load. 2. RunShard. | success=True, output_tensor non-empty, latency > 0. |
+| TC-IS-07 | FR-IE-04 | TestRunShard | Run shard forward pass | Verify RunShard in forward-pass mode returns logits. | Mocked loader, model loaded, mock model(). | generate_mode=False. | 1. Load. 2. RunShard. | success=True, output_tensor non-empty. |
+| TC-IS-08 | FR-IE-06 | TestRunShard | Run shard records latency | Verify RunShard records positive latency in response. | Mocked loader, model loaded. | Default run request. | 1. Load. 2. RunShard. | latency_ms > 0. |
+| TC-IS-09 | FR-IE-01 | TestUnloadShard | Unload shard success | Verify UnloadShard removes model and returns memory freed. | Mocked loader, one model loaded. | model_name="mamba-130m". | 1. Load. 2. Unload. | success=True, model removed from dict. |
+| TC-IS-10 | FR-IE-01 | TestUnloadShard | Unload shard not loaded | Verify UnloadShard for unknown model returns failure. | Empty servicer. | model_name="nonexistent". | 1. Call `UnloadShard`. | success=False. |
+
 ## Integration Tests
 
 ### Heartbeat Flow (`tests/integration/test_heartbeat_flow.py`)
@@ -228,3 +245,13 @@ Tests the full HuggingFace model loading and inference pipeline with the real Ma
 | TC-MLI-03 | FR-IE-01 | TestEndToEndInference | Generate returns string | Verify generation produces a non-empty string. | Model loaded via fixture. | Same prompt, max_new_tokens=10. | 1. Tokenize. 2. Generate. | Non-empty string. |
 | TC-MLI-04 | FR-IE-01 | TestEndToEndInference | Reference output match | Verify deterministic output matches the known reference. | Model loaded via fixture. | Same prompt, max_new_tokens=30. | 1. Tokenize. 2. Generate. 3. Compare. | Exact match with reference string. |
 | TC-MLI-05 | NFR-04 | TestEndToEndInference | No warnings on stderr | Verify no warning messages appear on stderr during inference. | None (runs in subprocess). | Same prompt. | 1. Run inference in subprocess. 2. Filter stderr for warnings. | No warning lines (progress bars allowed). |
+
+### Inference Flow (`tests/integration/test_inference_flow.py`)
+
+Tests the full inference gRPC roundtrip with real Mamba-130M model. Marked `@pytest.mark.slow`. Module-scoped fixture starts an in-process gRPC server with InferenceServiceServicer.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-IF-01 | FR-IE-01, FR-IE-04 | TestInferenceRoundtrip | Load and run | Load model via gRPC, run inference, verify non-empty output. | In-process gRPC server. | mamba-130m, token IDs, generate_mode=True. | 1. LoadShard. 2. RunShard. | Both succeed, output_tensor non-empty, latency > 0. |
+| TC-IF-02 | FR-IE-04 | TestInferenceRoundtrip | Run without load | RunShard before LoadShard raises NOT_FOUND. | In-process gRPC server, no model loaded. | model_name="nonexistent-model". | 1. RunShard. | Raises RpcError with NOT_FOUND. |
+| TC-IF-03 | FR-IE-01 | TestInferenceRoundtrip | Unload after load | UnloadShard removes the model from the servicer. | In-process gRPC server, model loaded. | model_name="unload-test-model". | 1. LoadShard. 2. UnloadShard. | success=True, model gone from servicer. |
