@@ -32,3 +32,6 @@ Thumbs.db
 # docs, plans, temporary files
 docs/plans/
 temp/
+
+# Benchmark results (machine-specific, regenerated per device)
+benchmarks/*.csv
