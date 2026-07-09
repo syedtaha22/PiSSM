@@ -209,6 +209,26 @@ Component under test: `inference.service.InferenceServiceServicer` - gRPC handle
 | TC-IS-09 | FR-IE-01 | TestUnloadShard | Unload shard success | Verify UnloadShard removes model and returns memory freed. | Mocked loader, one model loaded. | model_name="mamba-130m". | 1. Load. 2. Unload. | success=True, model removed from dict. |
 | TC-IS-10 | FR-IE-01 | TestUnloadShard | Unload shard not loaded | Verify UnloadShard for unknown model returns failure. | Empty servicer. | model_name="nonexistent". | 1. Call `UnloadShard`. | success=False. |
 
+### Dispatch Engine (`tests/unit/test_dispatch.py`)
+
+Component under test: `orchestrator.dispatch` - pure layer partitioning and shard assignment logic. No network or model I/O. Tests use a real `NodeRegistry` populated via `update_node` and a `MagicMock` manifest.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-DE-01 | FR-DE-02 | TestSplitLayers | Even split | Verify equal-sized ranges when total_layers divides evenly by num_nodes. | None. | total_layers=24, num_nodes=2. | 1. Call `split_layers(24, 2)`. | Returns [(0, 12), (12, 24)]. |
+| TC-DE-02 | FR-DE-02 | TestSplitLayers | Uneven split, last takes remainder | Verify the last range absorbs leftover layers when division is not exact. | None. | total_layers=10, num_nodes=3. | 1. Call `split_layers(10, 3)`. | Returns [(0, 3), (3, 6), (6, 10)]. |
+| TC-DE-03 | FR-DE-02 | TestSplitLayers | Single node gets full range | Verify a single node receives the complete [0, total_layers) range. | None. | total_layers=24, num_nodes=1. | 1. Call `split_layers(24, 1)`. | Returns [(0, 24)]. |
+| TC-DE-04 | FR-DE-02 | TestSplitLayers | Raises when more nodes than layers | Verify DispatchError is raised when num_nodes exceeds total_layers. | None. | total_layers=2, num_nodes=3. | 1. Call `split_layers(2, 3)`. | Raises DispatchError matching "nodes". |
+| TC-DE-05 | FR-DE-01, FR-DE-02 | TestPlanDispatch | Correct layer ranges | Verify each assignment receives the correct contiguous layer range from split_layers. | Registry with two available nodes. | layers=24, 2 nodes. | 1. Call `plan_dispatch`. 2. Extract (layer_start, layer_end) pairs. | Ranges are [(0, 12), (12, 24)]. |
+| TC-DE-06 | FR-DE-02 | TestPlanDispatch | is_first and is_last flags | Verify the first assignment has is_first=True and the last has is_last=True; others have both False. | Registry with two available nodes. | layers=24, 2 nodes. | 1. Call `plan_dispatch`. 2. Check flags on first and last assignments. | assignments[0].is_first=True, is_last=False; assignments[-1].is_first=False, is_last=True. |
+| TC-DE-07 | FR-DE-02 | TestPlanDispatch | next_worker_address points to next node | Verify a non-last assignment's next_worker_address is "ip:port" of the immediately following node. | Registry with two nodes, distinct ports. | node-0 at 192.168.1.10:50052, node-1 at 192.168.1.11:50053. | 1. Call `plan_dispatch`. 2. Check assignments[0].next_worker_address. | "192.168.1.11:50053". |
+| TC-DE-08 | FR-DE-02 | TestPlanDispatch | Last assignment has empty next_worker_address | Verify the last assignment's next_worker_address is an empty string. | Registry with two available nodes. | layers=24, 2 nodes. | 1. Call `plan_dispatch`. 2. Check assignments[-1].next_worker_address. | "". |
+| TC-DE-09 | FR-DE-01 | TestPlanDispatch | Raises with empty registry | Verify DispatchError is raised when no available nodes are in the registry. | Empty NodeRegistry. | layers=24. | 1. Call `plan_dispatch`. | Raises DispatchError matching "no available". |
+| TC-DE-10 | FR-DE-01 | TestPlanDispatch | Uses all available nodes | Verify plan_dispatch produces exactly one assignment per available node. | Registry with three available nodes. | layers=24, 3 nodes. | 1. Call `plan_dispatch`. 2. Check len(assignments). | 3 assignments. |
+| TC-DE-11 | FR-DE-02 | TestPlanDispatch | Single node is both first and last | Verify that with one node, is_first=True, is_last=True, and next_worker_address="". | Registry with one available node. | layers=24, 1 node. | 1. Call `plan_dispatch`. 2. Check flags and address. | is_first=True, is_last=True, next_worker_address="". |
+| TC-DE-12 | FR-DE-02 | TestPlanDispatch | Middle node has no first or last flag | Verify that a middle assignment has is_first=False and is_last=False. | Registry with three available nodes. | layers=24, 3 nodes. | 1. Call `plan_dispatch`. 2. Check assignments[1]. | is_first=False, is_last=False. |
+| TC-DE-13 | FR-DE-03 | TestPlanDispatch | Plan carries manifest metadata | Verify DispatchPlan stores arch, model_name, and total_layers from the manifest. | Registry with one available node. | arch="mamba", name="mamba-130m", layers=24. | 1. Call `plan_dispatch`. 2. Check plan fields. | arch="mamba", model_name="mamba-130m", total_layers=24. |
+
 ## Integration Tests
 
 ### Heartbeat Flow (`tests/integration/test_heartbeat_flow.py`)
