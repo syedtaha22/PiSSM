@@ -1,0 +1,139 @@
+// inference.proto
+//
+// Defines the gRPC service and messages for model loading and inference
+// execution on worker nodes. The orchestrator calls LoadShard to prepare
+// a worker, RunShard to execute inference, and UnloadShard to release
+// the model from memory. Tensors are serialized as raw bytes with shape
+// and dtype sent separately - no pickle.
+
+syntax = "proto3";
+
+package pissm;
+
+// Model loading and inference execution on worker nodes.
+// The orchestrator calls these RPCs to instruct workers to load models,
+// run forward passes or autoregressive generation, and release models
+// from memory. Each worker can hold multiple models simultaneously.
+service InferenceService {
+  // Instructs a worker to load a model (or a subset of its layers) into
+  // memory. The worker downloads the model from HuggingFace (or loads
+  // from local cache), instantiates the specified layers, and holds
+  // them resident in RAM until UnloadShard is called.
+  rpc LoadShard (LoadShardRequest) returns (LoadShardResponse);
+
+  // Executes a forward pass or autoregressive generation on a loaded
+  // model. The input tensor (tokenized text or intermediate activations)
+  // is deserialized from raw bytes. The output tensor (logits or
+  // generated token IDs) is serialized back. Latency and peak memory
+  // are recorded in the response.
+  rpc RunShard (RunShardRequest) returns (RunShardResponse);
+
+  // Releases a loaded model from worker memory. Frees the model and
+  // tokenizer references and triggers garbage collection.
+  rpc UnloadShard (UnloadShardRequest) returns (UnloadShardResponse);
+}
+
+// Request to load a model shard into worker memory.
+message LoadShardRequest {
+  // The model's registered name from the manifest.
+  string model_name = 1;
+
+  // HuggingFace model ID (e.g. "state-spaces/mamba-130m-hf") or
+  // local filesystem path to the checkpoint.
+  string checkpoint = 2;
+
+  // HuggingFace tokenizer ID (e.g. "EleutherAI/gpt-neox-20b") or
+  // local filesystem path to the tokenizer.
+  string tokenizer = 3;
+
+  // First layer index to load (inclusive). 0 for full model.
+  int32 layer_start = 4;
+
+  // Last layer index to load (exclusive). 0 means all layers.
+  int32 layer_end = 5;
+
+  // Model architecture string: "mamba", "s4", or "llm-transformer".
+  string arch = 6;
+}
+
+// Response after loading a model shard.
+message LoadShardResponse {
+  // True if the shard was loaded successfully.
+  bool success = 1;
+
+  // Error description if success is false, empty otherwise.
+  string error_message = 2;
+
+  // Approximate memory consumed by the loaded shard in megabytes.
+  uint32 memory_used_mb = 3;
+
+  // Number of model layers actually loaded.
+  int32 layers_loaded = 4;
+}
+
+// Request to run inference on a loaded model shard.
+message RunShardRequest {
+  // Which loaded model to run against.
+  string model_name = 1;
+
+  // Serialized input tensor as raw bytes. For text inference this is
+  // the tokenized input_ids. For pipeline stages this is the
+  // intermediate activations from the previous node.
+  bytes input_tensor = 2;
+
+  // Shape of the input tensor, e.g. [1, 128] for a batch of 128 tokens.
+  repeated int64 input_shape = 3;
+
+  // Dtype of the input tensor as a string, e.g. "torch.int64" for
+  // token IDs or "torch.float32" for activations.
+  string input_dtype = 4;
+
+  // Maximum number of new tokens to generate. Only used when
+  // generate_mode is true. Set to 0 for forward-pass-only mode.
+  int32 max_new_tokens = 5;
+
+  // True for autoregressive generation (token-by-token output).
+  // False for a single forward pass returning raw logits.
+  bool generate_mode = 6;
+}
+
+// Response from running inference on a loaded model shard.
+message RunShardResponse {
+  // True if the inference succeeded.
+  bool success = 1;
+
+  // Error description if success is false, empty otherwise.
+  string error_message = 2;
+
+  // Serialized output tensor as raw bytes. In generate mode this is
+  // the generated token IDs. In forward-pass mode this is the logits
+  // or intermediate activations.
+  bytes output_tensor = 3;
+
+  // Shape of the output tensor.
+  repeated int64 output_shape = 4;
+
+  // Dtype of the output tensor as a string.
+  string output_dtype = 5;
+
+  // Forward pass or generation latency in milliseconds.
+  float latency_ms = 6;
+
+  // Peak process memory usage during inference in megabytes.
+  uint32 peak_memory_mb = 7;
+}
+
+// Request to unload a model from worker memory.
+message UnloadShardRequest {
+  // The model name to unload.
+  string model_name = 1;
+}
+
+// Response after unloading a model.
+message UnloadShardResponse {
+  // True if the model was found and unloaded.
+  bool success = 1;
+
+  // Approximate memory freed in megabytes.
+  uint32 memory_freed_mb = 2;
+}

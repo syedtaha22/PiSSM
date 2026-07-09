@@ -136,6 +136,79 @@ Component under test: `worker.heartbeat.HeartbeatClient` - periodically sends gR
 | TC-HC-03 | FR-NM-01 | TestHeartbeatClientLifecycle | Client sends multiple heartbeats | Verify heartbeats continue periodically, not just on startup. | In-process gRPC server with interval=200ms. | node_id="test-node", interval=0.2s. | 1. Start client. 2. Wait 1.0s. 3. Read last_heartbeat. 4. Compare to current time. | last_heartbeat is within 0.5s of current time. |
 | TC-HC-04 | NFR-02 | TestHeartbeatClientResilience | Client handles server unavailable | Verify the client does not crash when the orchestrator is unreachable. | No server running on target port. | orchestrator_address="localhost:1", interval=0.2s. | 1. Start client. 2. Wait 0.5s. 3. Stop client. | is_running is False, no exceptions. |
 
+### Model Manifest (`tests/unit/test_manifest.py`)
+
+Component under test: `inference.manifest` - YAML manifest parsing and validation. No torch dependency. Uses pytest `tmp_path` for temporary YAML files.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-MF-01 | FR-MR-01 | TestLoadValidManifest | Load valid manifest | Verify a valid YAML produces a ModelManifest with all fields. | None. | Full valid manifest data. | 1. Write YAML to tmp file. 2. Call `load_manifest()`. | All 8 fields match input. |
+| TC-MF-02 | FR-MR-01 | TestLoadValidManifest | Manifest is frozen | Verify ModelManifest is immutable. | None. | Valid manifest. | 1. Load manifest. 2. Try to assign a field. | Raises AttributeError. |
+| TC-MF-03 | FR-MR-03 | TestMissingFields | Missing required field (parametrized x8) | Verify each missing required field raises ManifestError. | None. | Manifest with one field removed. | 1. Remove field. 2. Call `load_manifest()`. | Raises ManifestError matching field name. |
+| TC-MF-04 | FR-MR-03 | TestInvalidValues | Unsupported arch | Verify unsupported architecture raises ManifestError. | None. | arch="rnn". | 1. Call `load_manifest()`. | Raises ManifestError matching "arch". |
+| TC-MF-05 | FR-MR-03 | TestInvalidValues | Unsupported input type | Verify unsupported input type raises ManifestError. | None. | input_type="video". | 1. Call `load_manifest()`. | Raises ManifestError matching "input_type". |
+| TC-MF-06 | FR-MR-03 | TestInvalidValues | Layers zero | Verify zero layers raises ManifestError. | None. | layers=0. | 1. Call `load_manifest()`. | Raises ManifestError matching "layers". |
+| TC-MF-07 | FR-MR-03 | TestInvalidValues | Layers negative | Verify negative layers raises ManifestError. | None. | layers=-1. | 1. Call `load_manifest()`. | Raises ManifestError matching "layers". |
+| TC-MF-08 | FR-MR-03 | TestInvalidValues | Name with spaces | Verify name with spaces raises ManifestError. | None. | name="my model". | 1. Call `load_manifest()`. | Raises ManifestError matching "name". |
+| TC-MF-09 | FR-MR-03 | TestFileErrors | File not found | Verify nonexistent path raises ManifestError. | None. | path="/nonexistent/manifest.yaml". | 1. Call `load_manifest()`. | Raises ManifestError matching "not found". |
+
+### Model Registry (`tests/unit/test_model_registry.py`)
+
+Component under test: `inference.model_registry.ModelRegistry` - thread-safe in-memory store of validated model manifests. No torch dependency.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-MR-01 | FR-MR-01 | TestRegisterAndGet | Register and get | Verify a registered manifest can be retrieved by name. | Empty registry. | Valid manifest. | 1. Register manifest. 2. Call `get(name)`. | Returns manifest with matching fields. |
+| TC-MR-02 | FR-MR-01 | TestRegisterAndGet | Duplicate raises | Verify registering the same name twice raises ValueError. | Registry with one model. | Same manifest. | 1. Register. 2. Register again. | Raises ValueError matching model name. |
+| TC-MR-03 | FR-MR-01 | TestRegisterAndGet | Get unknown | Verify looking up an unregistered model returns None. | Empty registry. | name="nonexistent". | 1. Call `get("nonexistent")`. | Returns None. |
+| TC-MR-04 | FR-MR-04 | TestListModels | List empty | Verify empty registry returns empty list. | Empty registry. | None. | 1. Call `list_models()`. | Returns []. |
+| TC-MR-05 | FR-MR-04 | TestListModels | List all | Verify all registered models are returned. | Empty registry. | 3 models. | 1. Register 3 models. 2. Call `list_models()`. | Returns 3 items with correct names. |
+| TC-MR-06 | FR-MR-05 | TestDeleteModel | Delete existing | Verify deleting an existing model returns True and removes it. | Registry with one model. | name="mamba-130m". | 1. Delete. 2. Call `get(name)`. | Returns True, get returns None. |
+| TC-MR-07 | FR-MR-05 | TestDeleteModel | Delete nonexistent | Verify deleting a nonexistent model returns False. | Empty registry. | name="nonexistent". | 1. Call `delete("nonexistent")`. | Returns False. |
+| TC-MR-08 | NFR-02 | TestThreadSafety | Concurrent register | Verify 20 threads registering different models causes no corruption. | Empty registry. | 20 unique model names. | 1. Spawn 20 threads. 2. Join. 3. Call `list_models()`. | No exceptions, 20 models in registry. |
+
+### Tensor Serialization (`tests/unit/test_tensor_utils.py`)
+
+Component under test: `inference.tensor_utils` - serializes PyTorch tensors to raw bytes with shape and dtype metadata for gRPC transport, and reconstructs them on the receiving side. Requires torch, no model download.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-TU-01 | FR-IE-04 | TestRoundtrip | Roundtrip float32 | Verify a float32 tensor survives serialize-deserialize with correct values. | None. | [1.0, 2.5, -3.7] float32. | 1. Serialize. 2. Deserialize. 3. Compare. | Values match, dtype is float32. |
+| TC-TU-02 | FR-IE-04 | TestRoundtrip | Roundtrip int64 | Verify an int64 tensor (token IDs) survives roundtrip. | None. | [101, 2023, 3045, 0] int64. | 1. Serialize. 2. Deserialize. 3. Compare. | Values match, dtype is int64. |
+| TC-TU-03 | FR-IE-04 | TestRoundtrip | Roundtrip 2D | Verify a 2D tensor shape (1, 128) is preserved. | None. | Random int64 (1, 128). | 1. Serialize. 2. Deserialize. 3. Check shape. | Shape is (1, 128), values match. |
+| TC-TU-04 | FR-IE-04 | TestRoundtrip | Roundtrip 3D | Verify a 3D tensor shape (1, 128, 768) is preserved. | None. | Random float32 (1, 128, 768). | 1. Serialize. 2. Deserialize. 3. Check shape. | Shape is (1, 128, 768), values match. |
+| TC-TU-05 | FR-IE-04 | TestErrors | Unknown dtype raises | Verify unsupported dtype string raises ValueError. | None. | dtype_str="torch.bfloat16". | 1. Call `deserialize_tensor` with unsupported dtype. | Raises ValueError matching "dtype". |
+| TC-TU-06 | FR-IE-04 | TestErrors | Shape mismatch raises | Verify mismatched data size and shape raises ValueError. | None. | 3-element float32 data, shape=[10]. | 1. Serialize 3 floats. 2. Deserialize with shape [10]. | Raises ValueError. |
+
+### Model Loader (`tests/unit/test_loader.py`)
+
+Component under test: `inference.loader` - loads HuggingFace models and tokenizers, runs tokenization and generation. Unit tests mock the model class via `patch.dict(_ARCH_TO_MODEL_CLASS)` to avoid downloading models.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-ML-01 | FR-IE-01 | TestLoadModel | Unsupported arch raises | Verify loading an unsupported architecture raises NotImplementedError. | None. | arch="s4". | 1. Call `load_model` with arch="s4". | Raises NotImplementedError matching "s4". |
+| TC-ML-02 | FR-IE-01 | TestLoadModel | Load returns handle | Verify loading a model returns a ModelHandle with all fields set. | Mocked model class and tokenizer. | Default manifest. | 1. Call `load_model`. 2. Check handle fields. | name, model, tokenizer, manifest, loaded_at all set. |
+| TC-ML-03 | FR-IE-01 | TestLoadModel | Load sets eval mode | Verify the model is set to eval mode after loading. | Mocked model class. | Default manifest. | 1. Call `load_model`. 2. Check mock. | `model.eval()` called once. |
+| TC-ML-04 | FR-IE-01 | TestLoadModel | Load sets CPU | Verify the model is moved to CPU after loading. | Mocked model class. | Default manifest. | 1. Call `load_model`. 2. Check mock. | `model.to("cpu")` called once. |
+| TC-ML-05 | FR-IE-01 | TestUnloadModel | Unload clears references | Verify unloading sets model and tokenizer to None. | ModelHandle with mock model/tokenizer. | None. | 1. Call `unload_model`. 2. Check handle. | model is None, tokenizer is None. |
+
+### InferenceServiceServicer (`tests/unit/test_inference_service.py`)
+
+Component under test: `inference.service.InferenceServiceServicer` - gRPC handler that bridges LoadShard/RunShard/UnloadShard requests to the model loader. Unit tests mock the loader via `patch("inference.service.load_model")` to avoid model downloads.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-IS-01 | FR-IE-01 | TestLoadShard | Load shard success | Verify LoadShard with valid parameters returns success. | Mocked loader. | Default load request. | 1. Call `LoadShard`. | success=True, memory_used_mb=260, layers_loaded=24. |
+| TC-IS-02 | FR-IE-01 | TestLoadShard | Load shard stores model | Verify the model is stored in the servicer's internal dict. | Mocked loader. | Default load request. | 1. Call `LoadShard`. 2. Check `_models`. | Model present in dict. |
+| TC-IS-03 | FR-IE-01 | TestLoadShard | Load shard duplicate rejects | Verify loading the same name twice returns failure. | Mocked loader, one model loaded. | Same model name twice. | 1. Load. 2. Load again. | success=False, "already loaded". |
+| TC-IS-04 | FR-IE-01 | TestLoadShard | Load shard failure | Verify loader exceptions produce success=False with error message. | Mocked loader raises. | arch="s4". | 1. Call `LoadShard`. | success=False, error contains "s4". |
+| TC-IS-05 | FR-IE-04 | TestRunShard | Run shard model not loaded | Verify RunShard for unloaded model sets NOT_FOUND. | Empty servicer. | model_name="mamba-130m". | 1. Call `RunShard`. | success=False, context.set_code(NOT_FOUND). |
+| TC-IS-06 | FR-IE-04 | TestRunShard | Run shard generate mode | Verify RunShard in generate mode returns output tensor. | Mocked loader, model loaded, mock model.generate. | generate_mode=True. | 1. Load. 2. RunShard. | success=True, output_tensor non-empty, latency > 0. |
+| TC-IS-07 | FR-IE-04 | TestRunShard | Run shard forward pass | Verify RunShard in forward-pass mode returns logits. | Mocked loader, model loaded, mock model(). | generate_mode=False. | 1. Load. 2. RunShard. | success=True, output_tensor non-empty. |
+| TC-IS-08 | FR-IE-06 | TestRunShard | Run shard records latency | Verify RunShard records positive latency in response. | Mocked loader, model loaded. | Default run request. | 1. Load. 2. RunShard. | latency_ms > 0. |
+| TC-IS-09 | FR-IE-01 | TestUnloadShard | Unload shard success | Verify UnloadShard removes model and returns memory freed. | Mocked loader, one model loaded. | model_name="mamba-130m". | 1. Load. 2. Unload. | success=True, model removed from dict. |
+| TC-IS-10 | FR-IE-01 | TestUnloadShard | Unload shard not loaded | Verify UnloadShard for unknown model returns failure. | Empty servicer. | model_name="nonexistent". | 1. Call `UnloadShard`. | success=False. |
+
 ## Integration Tests
 
 ### Heartbeat Flow (`tests/integration/test_heartbeat_flow.py`)
@@ -160,3 +233,25 @@ Tests the full orchestrator lifecycle: gRPC server + reaper thread + HeartbeatCl
 | TC-FD-05 | FR-NM-03 | TestFailureDetection | Node drops after missed heartbeats | Verify a node that stops heartbeating is marked unavailable by the reaper. | Full orchestrator running (server + reaper). | node_id="node-1", interval=0.1s, timeout=0.3s. | 1. Start orchestrator. 2. Start client. 3. Wait 0.3s, verify available. 4. Stop client. 5. Wait for timeout. | Node status is "unavailable". |
 | TC-FD-06 | FR-NM-05 | TestFailureDetection | Node rejoins after restart | Verify a previously unavailable node is restored when it resumes heartbeating. | Full orchestrator running, one node previously reaped. | node_id="node-1", interval=0.1s. | 1. Start client, wait, stop. 2. Wait for reap. 3. Start new client with same node_id. 4. Wait 0.3s. | Node status is "available". |
 | TC-E2E-01 | FR-NM-01, FR-NM-02, FR-NM-03 | TestEndToEnd | Two workers, one dies | Sprint acceptance test: two workers register, one is killed, the dead one is reaped, the live one stays available. | Full orchestrator running. | worker-1 and worker-2, interval=0.1s. | 1. Start both clients. 2. Wait 0.3s, verify 2 available. 3. Stop worker-2. 4. Wait for timeout. | worker-1 available, worker-2 unavailable. |
+
+### Model Loading (`tests/integration/test_model_loading.py`)
+
+Tests the full HuggingFace model loading and inference pipeline with the real Mamba-130M model. Marked `@pytest.mark.slow`. Module-scoped fixture loads the model once, shared across tests.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-MLI-01 | FR-IE-01 | TestModelLoading | Model handle fields | Verify the loaded handle has correct name, non-None model/tokenizer, and non-negative memory. | Model loaded via fixture. | mamba-130m manifest. | 1. Check handle fields. | name="mamba-130m", model/tokenizer not None, memory_mb >= 0. |
+| TC-MLI-02 | FR-IE-02 | TestEndToEndInference | Tokenize returns tensors | Verify tokenize returns input_ids and attention_mask as 2D int64 tensors. | Model loaded via fixture. | prompt="Hey how are you doing?". | 1. Call `tokenize()`. 2. Check types and shapes. | Both 2D, same shape, int64. |
+| TC-MLI-03 | FR-IE-01 | TestEndToEndInference | Generate returns string | Verify generation produces a non-empty string. | Model loaded via fixture. | Same prompt, max_new_tokens=10. | 1. Tokenize. 2. Generate. | Non-empty string. |
+| TC-MLI-04 | FR-IE-01 | TestEndToEndInference | Reference output match | Verify deterministic output matches the known reference. | Model loaded via fixture. | Same prompt, max_new_tokens=30. | 1. Tokenize. 2. Generate. 3. Compare. | Exact match with reference string. |
+| TC-MLI-05 | NFR-04 | TestEndToEndInference | No warnings on stderr | Verify no warning messages appear on stderr during inference. | None (runs in subprocess). | Same prompt. | 1. Run inference in subprocess. 2. Filter stderr for warnings. | No warning lines (progress bars allowed). |
+
+### Inference Flow (`tests/integration/test_inference_flow.py`)
+
+Tests the full inference gRPC roundtrip with real Mamba-130M model. Marked `@pytest.mark.slow`. Module-scoped fixture starts an in-process gRPC server with InferenceServiceServicer.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-IF-01 | FR-IE-01, FR-IE-04 | TestInferenceRoundtrip | Load and run | Load model via gRPC, run inference, verify non-empty output. | In-process gRPC server. | mamba-130m, token IDs, generate_mode=True. | 1. LoadShard. 2. RunShard. | Both succeed, output_tensor non-empty, latency > 0. |
+| TC-IF-02 | FR-IE-04 | TestInferenceRoundtrip | Run without load | RunShard before LoadShard raises NOT_FOUND. | In-process gRPC server, no model loaded. | model_name="nonexistent-model". | 1. RunShard. | Raises RpcError with NOT_FOUND. |
+| TC-IF-03 | FR-IE-01 | TestInferenceRoundtrip | Unload after load | UnloadShard removes the model from the servicer. | In-process gRPC server, model loaded. | model_name="unload-test-model". | 1. LoadShard. 2. UnloadShard. | success=True, model gone from servicer. |
