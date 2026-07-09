@@ -86,12 +86,21 @@ cd PiSSM
 python3 -m venv .venv
 source .venv/bin/activate
 
-# For development (includes pytest, black, ruff)
-pip install -e ".[dev]"
+# All nodes
+pip install .
 
-# For running only (no dev tools)
+# Add dev tools (pytest, black, ruff) for development
+pip install -e ".[dev]"
+```
+
+**On Raspberry Pi (aarch64):** `pip install .` may fail with a "No space left on device" or similar error. If it does, try installing CPU-only torch first:
+
+```bash
+pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
 pip install .
 ```
+
+If it still fails, open an issue.
 
 ### Generate gRPC Stubs
 
