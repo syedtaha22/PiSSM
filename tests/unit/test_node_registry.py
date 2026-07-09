@@ -54,6 +54,7 @@ def register_node(
     arch="aarch64",
     os_name="Linux",
     os_version="6.6.31+rpt-rpi-2712",
+    inference_port=50052,
 ):
     """
     Register a node with sensible defaults.
@@ -78,6 +79,8 @@ def register_node(
         Operating system name.
     os_version : str
         OS kernel version string.
+    inference_port : int
+        gRPC port on which the node's InferenceService is listening.
     """
     registry.update_node(
         node_id=node_id,
@@ -88,6 +91,7 @@ def register_node(
         arch=arch,
         os_name=os_name,
         os_version=os_version,
+        inference_port=inference_port,
     )
 
 
@@ -123,6 +127,7 @@ class TestNodeRegistration:
         assert node.status == "available"
         assert node.last_heartbeat == 100.0
         assert node.first_seen == 100.0
+        assert node.inference_port == 50052
 
     def test_update_existing_node(self):
         """

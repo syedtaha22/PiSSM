@@ -45,6 +45,8 @@ class NodeInfo:
         Monotonic clock value of the most recent heartbeat.
     first_seen : float
         Monotonic clock value when the node first registered.
+    inference_port : int
+        gRPC port on which the node's InferenceService is listening.
     """
 
     node_id: str
@@ -58,6 +60,7 @@ class NodeInfo:
     status: str
     last_heartbeat: float
     first_seen: float
+    inference_port: int
 
 
 class NodeRegistry:
@@ -104,6 +107,7 @@ class NodeRegistry:
         arch: str,
         os_name: str,
         os_version: str,
+        inference_port: int = 0,
     ) -> None:
         """
         Register a new node or update an existing node's heartbeat.
@@ -129,6 +133,8 @@ class NodeRegistry:
             Operating system name.
         os_version : str
             OS kernel version string.
+        inference_port : int
+            gRPC port on which the node's InferenceService is listening.
         """
         now = self._clock()
         with self._lock:
@@ -146,6 +152,7 @@ class NodeRegistry:
                 status="available",
                 last_heartbeat=now,
                 first_seen=first_seen,
+                inference_port=inference_port,
             )
 
     def get_node(self, node_id: str) -> NodeInfo | None:

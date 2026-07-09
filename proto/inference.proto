@@ -1,36 +1,63 @@
 // inference.proto
 //
-// Defines the gRPC service and messages for model loading and inference
-// execution on worker nodes. The orchestrator calls LoadShard to prepare
-// a worker, RunShard to execute inference, and UnloadShard to release
-// the model from memory. Tensors are serialized as raw bytes with shape
+// Defines the gRPC service and messages for model loading, inference
+// execution, and pipeline result delivery in PiSSM. The orchestrator
+// calls LoadShard to prepare workers with their assigned layer slice,
+// RunShard to trigger inference (fire-and-forward), and UnloadShard
+// to release memory. Tensors are serialized as raw bytes with shape
 // and dtype sent separately - no pickle.
+//
+// The circular pipeline topology is: orchestrator fires RunShard at
+// the first worker; each non-last worker forwards activations to the
+// next; the last worker calls PipelineCallbackService.DeliverResult
+// directly back on the orchestrator.
 
 syntax = "proto3";
 
 package pissm;
 
 // Model loading and inference execution on worker nodes.
-// The orchestrator calls these RPCs to instruct workers to load models,
-// run forward passes or autoregressive generation, and release models
-// from memory. Each worker can hold multiple models simultaneously.
+// The orchestrator calls these RPCs to instruct workers to load their
+// assigned model shard, run forward passes, forward activations to the
+// next worker in the pipeline, and release memory. Workers also expose
+// Ping for network benchmarking.
 service InferenceService {
-  // Instructs a worker to load a model (or a subset of its layers) into
-  // memory. The worker downloads the model from HuggingFace (or loads
-  // from local cache), instantiates the specified layers, and holds
-  // them resident in RAM until UnloadShard is called.
+  // Instructs a worker to load a model shard into memory. If
+  // shard_weights is non-empty, the worker reconstructs the shard
+  // from the provided bytes (no HuggingFace download). Otherwise
+  // falls back to loading from the checkpoint field (single-node
+  // backward compatibility). Holds the shard resident until
+  // UnloadShard is called.
   rpc LoadShard (LoadShardRequest) returns (LoadShardResponse);
 
-  // Executes a forward pass or autoregressive generation on a loaded
-  // model. The input tensor (tokenized text or intermediate activations)
-  // is deserialized from raw bytes. The output tensor (logits or
-  // generated token IDs) is serialized back. Latency and peak memory
-  // are recorded in the response.
+  // Triggers a forward pass on the worker's loaded shard. The worker
+  // runs its layers, appends its execution time to node_latencies_ms,
+  // and either forwards the output to the next worker (if
+  // next_worker_address was set at LoadShard time) or calls
+  // DeliverResult on the orchestrator (if this is the last shard).
+  // Returns immediately with an acknowledgement - the result arrives
+  // asynchronously via DeliverResult.
   rpc RunShard (RunShardRequest) returns (RunShardResponse);
 
-  // Releases a loaded model from worker memory. Frees the model and
+  // Releases a loaded shard from worker memory. Frees the model and
   // tokenizer references and triggers garbage collection.
   rpc UnloadShard (UnloadShardRequest) returns (UnloadShardResponse);
+
+  // Echoes back an arbitrary payload for network latency and throughput
+  // benchmarking. Used by benchmark_network.py to characterize the
+  // inter-node communication overhead before profiling inference.
+  rpc Ping (PingRequest) returns (PingResponse);
+}
+
+// Implemented by the orchestrator to receive inference results from the
+// last node in a pipeline. Workers call DeliverResult instead of
+// returning results back through the call chain, keeping the data
+// flow circular: orchestrator -> node0 -> node1 -> orchestrator.
+service PipelineCallbackService {
+  // Called by the last pipeline worker once its forward pass completes.
+  // Carries the final output tensor and the accumulated per-node timing
+  // and memory data collected as the request traversed the pipeline.
+  rpc DeliverResult (DeliverResultRequest) returns (DeliverResultResponse);
 }
 
 // Request to load a model shard into worker memory.
@@ -39,21 +66,43 @@ message LoadShardRequest {
   string model_name = 1;
 
   // HuggingFace model ID (e.g. "state-spaces/mamba-130m-hf") or
-  // local filesystem path to the checkpoint.
+  // local filesystem path to the checkpoint. Used only when
+  // shard_weights is empty (single-node backward compatibility).
   string checkpoint = 2;
 
   // HuggingFace tokenizer ID (e.g. "EleutherAI/gpt-neox-20b") or
   // local filesystem path to the tokenizer.
   string tokenizer = 3;
 
-  // First layer index to load (inclusive). 0 for full model.
+  // First layer index assigned to this shard (inclusive).
   int32 layer_start = 4;
 
-  // Last layer index to load (exclusive). 0 means all layers.
+  // Last layer index assigned to this shard (exclusive).
   int32 layer_end = 5;
 
   // Model architecture string: "mamba", "s4", or "llm-transformer".
   string arch = 6;
+
+  // Address of the next worker in the pipeline (host:port). Empty
+  // string for the last shard. Set by the orchestrator at LoadShard
+  // time so the worker knows where to forward activations without
+  // the orchestrator being in the forwarding path.
+  string next_worker_address = 7;
+
+  // Total number of layers in the full model (not just this shard).
+  // Used to determine whether this shard is first (receives token IDs)
+  // or last (produces logits) in the pipeline.
+  int32 total_layers = 8;
+
+  // Serialized shard weights: output of torch.save(shard.state_dict()).
+  // The orchestrator extracts and sends these so workers never download
+  // the full checkpoint directly. Empty when using the checkpoint field.
+  bytes shard_weights = 9;
+
+  // HuggingFace model configuration JSON (config.to_json_string()).
+  // Workers use this to reconstruct the shard module architecture
+  // before loading the received state_dict. Empty when using checkpoint.
+  bytes model_config_json = 10;
 }
 
 // Response after loading a model shard.
@@ -76,9 +125,9 @@ message RunShardRequest {
   // Which loaded model to run against.
   string model_name = 1;
 
-  // Serialized input tensor as raw bytes. For text inference this is
-  // the tokenized input_ids. For pipeline stages this is the
-  // intermediate activations from the previous node.
+  // Serialized input tensor as raw bytes. For the first shard this is
+  // the tokenized input_ids. For intermediate shards this is the
+  // hidden states forwarded from the previous node.
   bytes input_tensor = 2;
 
   // Shape of the input tensor, e.g. [1, 128] for a batch of 128 tokens.
@@ -89,12 +138,32 @@ message RunShardRequest {
   string input_dtype = 4;
 
   // Maximum number of new tokens to generate. Only used when
-  // generate_mode is true. Set to 0 for forward-pass-only mode.
+  // generate_mode is true. Set to 0 for a single forward pass.
   int32 max_new_tokens = 5;
 
   // True for autoregressive generation (token-by-token output).
-  // False for a single forward pass returning raw logits.
+  // False for a single forward pass returning logits or activations.
   bool generate_mode = 6;
+
+  // Unique identifier for this inference request. Each worker forwards
+  // this unchanged so the orchestrator can correlate the DeliverResult
+  // callback with the original run call.
+  string request_id = 7;
+
+  // Address of the orchestrator's PipelineCallbackService (host:port).
+  // Forwarded unchanged through the pipeline. The last worker uses this
+  // to call DeliverResult directly back on the orchestrator.
+  string orchestrator_callback_address = 8;
+
+  // Accumulated per-node forward-pass latency in milliseconds, in
+  // pipeline order. Each worker appends its own compute time before
+  // forwarding to the next. The orchestrator uses the final list to
+  // derive per-node breakdown and total communication overhead.
+  repeated float node_latencies_ms = 9;
+
+  // Accumulated per-node peak memory usage in megabytes, in pipeline
+  // order. Each worker appends its own peak RSS before forwarding.
+  repeated uint32 node_peak_memory_mb = 10;
 }
 
 // Response from running inference on a loaded model shard.
@@ -136,4 +205,54 @@ message UnloadShardResponse {
 
   // Approximate memory freed in megabytes.
   uint32 memory_freed_mb = 2;
+}
+
+// Request for the Ping RPC. Carries an arbitrary payload used by
+// benchmark_network.py to measure round-trip latency and throughput
+// at several payload sizes.
+message PingRequest {
+  // Arbitrary byte payload. The worker echoes it back unchanged.
+  // Vary the size to measure both latency (small) and bandwidth (large).
+  bytes payload = 1;
+}
+
+// Response from the Ping RPC. Echoes the payload unchanged.
+message PingResponse {
+  // The same payload from PingRequest, returned without modification.
+  bytes payload = 1;
+}
+
+// Delivered by the last pipeline worker to the orchestrator's
+// PipelineCallbackService once its forward pass completes.
+message DeliverResultRequest {
+  // Matches the request_id from the RunShardRequest that started this
+  // pipeline. Used by the orchestrator to correlate the result with
+  // the waiting run_forward() call.
+  string request_id = 1;
+
+  // Serialized output tensor from the last shard as raw bytes.
+  // For text models this is logits; for generation it is token IDs.
+  bytes output_tensor = 2;
+
+  // Shape of the output tensor.
+  repeated int64 output_shape = 3;
+
+  // Dtype of the output tensor as a string.
+  string output_dtype = 4;
+
+  // Per-node forward-pass latency in milliseconds, accumulated across
+  // all pipeline stages in order. Length equals the number of workers.
+  repeated float node_latencies_ms = 5;
+
+  // Per-node peak memory usage in megabytes, accumulated in the same
+  // order as node_latencies_ms.
+  repeated uint32 node_peak_memory_mb = 6;
+}
+
+// Acknowledgement returned by the orchestrator after receiving the
+// pipeline result. Signals the worker that delivery was accepted.
+message DeliverResultResponse {
+  // True if the orchestrator successfully matched the request_id and
+  // stored the result.
+  bool acknowledged = 1;
 }

@@ -69,6 +69,7 @@ def main():
         orchestrator_address=args.orchestrator,
         node_id=node_id,
         interval_s=args.heartbeat_interval,
+        inference_port=args.inference_port,
     )
 
     inference_servicer = InferenceServiceServicer()

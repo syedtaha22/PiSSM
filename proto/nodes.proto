@@ -62,6 +62,11 @@ message HeartbeatRequest {
   // The orchestrator primarily uses its own receive time for timeout
   // calculations, but this field can be used to detect clock skew.
   uint64 timestamp = 9;
+
+  // gRPC port on which this node's InferenceService is listening.
+  // The orchestrator stores this alongside the IP address so it can
+  // open WorkerClient connections for LoadShard and RunShard calls.
+  uint32 inference_port = 10;
 }
 
 // Response returned by the orchestrator after processing a heartbeat.
