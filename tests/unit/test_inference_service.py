@@ -94,7 +94,7 @@ def make_run_request(
     )
 
 
-def make_mock_handle(name="mamba-130m"):
+def make_mock_handle(name="mamba-130m", next_worker_address=""):
     """
     Create a mock ModelHandle.
 
@@ -102,6 +102,8 @@ def make_mock_handle(name="mamba-130m"):
     ----------
     name : str
         Model name.
+    next_worker_address : str
+        Address of the next worker in the pipeline, or empty string.
 
     Returns
     -------
@@ -113,7 +115,89 @@ def make_mock_handle(name="mamba-130m"):
     handle.memory_mb = 260
     handle.manifest = MagicMock()
     handle.manifest.layers = 24
+    handle.next_worker_address = next_worker_address
     return handle
+
+
+def make_load_request_bytes(
+    model_name="mamba-130m",
+    arch="mamba",
+    layer_start=0,
+    layer_end=12,
+    total_layers=24,
+    next_worker_address="192.168.1.11:50052",
+):
+    """
+    Build a LoadShardRequest that carries shard weight bytes.
+
+    Parameters
+    ----------
+    model_name : str
+        Model name.
+    arch : str
+        Architecture string.
+    layer_start : int
+        First layer index.
+    layer_end : int
+        Last layer index (exclusive).
+    total_layers : int
+        Total layers in the full model.
+    next_worker_address : str
+        Address of the next worker in the pipeline.
+
+    Returns
+    -------
+    inference_pb2.LoadShardRequest
+        A populated load request with non-empty shard_weights.
+    """
+    return inference_pb2.LoadShardRequest(
+        model_name=model_name,
+        arch=arch,
+        layer_start=layer_start,
+        layer_end=layer_end,
+        total_layers=total_layers,
+        next_worker_address=next_worker_address,
+        shard_weights=b"fake_shard_weights",
+        model_config_json=b"{}",
+    )
+
+
+def make_pipeline_run_request(
+    model_name="mamba-130m",
+    input_tensor=None,
+    request_id="req-abc",
+    orchestrator_callback_address="localhost:50060",
+):
+    """
+    Build a RunShardRequest for pipeline mode.
+
+    Parameters
+    ----------
+    model_name : str
+        Model name.
+    input_tensor : torch.Tensor or None
+        Input tensor. Defaults to a small int64 tensor.
+    request_id : str
+        UUID-style correlation identifier.
+    orchestrator_callback_address : str
+        Address of the orchestrator's PipelineCallbackService.
+
+    Returns
+    -------
+    inference_pb2.RunShardRequest
+        A populated run request in pipeline mode.
+    """
+    if input_tensor is None:
+        input_tensor = torch.tensor([[101, 2023, 3045]], dtype=torch.int64)
+    data, shape, dtype_str = serialize_tensor(input_tensor)
+    return inference_pb2.RunShardRequest(
+        model_name=model_name,
+        input_tensor=data,
+        input_shape=shape,
+        input_dtype=dtype_str,
+        request_id=request_id,
+        orchestrator_callback_address=orchestrator_callback_address,
+    )
 
 
 class TestLoadShard:
@@ -186,6 +270,24 @@ class TestLoadShard:
 
         assert response.success is False
         assert "s4" in response.error_message
+
+    @patch("inference.service.load_shard_from_bytes")
+    def test_load_shard_from_bytes_path(self, mock_load_shard_from_bytes):
+        """
+        LoadShard with non-empty shard_weights calls load_shard_from_bytes
+        instead of load_model and reports layers as layer_end - layer_start.
+        """
+        from inference.service import InferenceServiceServicer
+
+        mock_load_shard_from_bytes.return_value = make_mock_handle()
+        servicer = InferenceServiceServicer()
+        context = MagicMock()
+
+        response = servicer.LoadShard(make_load_request_bytes(), context)
+
+        assert response.success is True
+        mock_load_shard_from_bytes.assert_called_once()
+        assert response.layers_loaded == 12
 
 
 class TestRunShard:
@@ -271,6 +373,60 @@ class TestRunShard:
         response = servicer.RunShard(make_run_request(), context)
 
         assert response.latency_ms > 0
+
+    @patch("inference.service.WorkerClient")
+    @patch("inference.service.load_shard_from_bytes")
+    def test_run_shard_pipeline_forwards_to_next_worker(
+        self, mock_load_shard_from_bytes, mock_worker_cls
+    ):
+        """
+        In pipeline mode with a next_worker_address, RunShard fires
+        WorkerClient.run_shard and returns an acknowledgement only.
+        """
+        from inference.service import InferenceServiceServicer
+
+        mock_handle = make_mock_handle(next_worker_address="192.168.1.11:50052")
+        mock_handle.model.return_value = torch.randn(1, 3, 768)
+        mock_load_shard_from_bytes.return_value = mock_handle
+
+        mock_worker_instance = mock_worker_cls.return_value.__enter__.return_value
+
+        servicer = InferenceServiceServicer()
+        context = MagicMock()
+
+        servicer.LoadShard(make_load_request_bytes(), context)
+        response = servicer.RunShard(make_pipeline_run_request(), context)
+
+        assert response.success is True
+        mock_worker_cls.assert_called_once_with("192.168.1.11:50052")
+        mock_worker_instance.run_shard.assert_called_once()
+
+    @patch("inference.service.PipelineCallbackClient")
+    @patch("inference.service.load_shard_from_bytes")
+    def test_run_shard_last_shard_delivers_result(
+        self, mock_load_shard_from_bytes, mock_callback_cls
+    ):
+        """
+        In pipeline mode with an empty next_worker_address, RunShard calls
+        PipelineCallbackClient.deliver_result on the orchestrator.
+        """
+        from inference.service import InferenceServiceServicer
+
+        mock_handle = make_mock_handle(next_worker_address="")
+        mock_handle.model.return_value = torch.randn(1, 3, 50280)
+        mock_load_shard_from_bytes.return_value = mock_handle
+
+        mock_callback_instance = mock_callback_cls.return_value.__enter__.return_value
+
+        servicer = InferenceServiceServicer()
+        context = MagicMock()
+
+        servicer.LoadShard(make_load_request_bytes(), context)
+        response = servicer.RunShard(make_pipeline_run_request(), context)
+
+        assert response.success is True
+        mock_callback_cls.assert_called_once_with("localhost:50060")
+        mock_callback_instance.deliver_result.assert_called_once()
 
 
 class TestUnloadShard:
