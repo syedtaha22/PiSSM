@@ -259,6 +259,24 @@ Tests for `MambaShardModule` forward pass shapes using lightweight mock sub-modu
 | TC-SM-06 | FR-IE-04 | TestMambaShardModuleValidation | Requires embeddings when is_first | Verify ValueError when is_first=True but embeddings is None. | None. | is_first=True, embeddings=None. | 1. Construct MambaShardModule. | Raises ValueError matching "embeddings". |
 | TC-SM-07 | FR-IE-04 | TestMambaShardModuleValidation | Requires norm and lm_head when is_last | Verify ValueError when is_last=True but norm_f or lm_head is None. | None. | is_last=True, norm_f=None. | 1. Construct MambaShardModule. | Raises ValueError matching "norm_f". |
 
+### Pipeline Coordinator (`tests/unit/test_pipeline.py`)
+
+Tests for `ResultStore`, `PipelineCallbackServicer`, and `PipelineRunner`. All `WorkerClient` calls are mocked; no real network I/O occurs.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-PC-01 | FR-IE-05 | TestResultStore | wait returns delivered result | Verify that delivering a result to a created slot unblocks wait and returns the PipelineResult. | None. | PipelineResult with output tensor and latency lists. | 1. create_slot. 2. deliver from background thread. 3. wait. | Returns the exact PipelineResult delivered. |
+| TC-PC-02 | FR-IE-05 | TestResultStore | wait raises on timeout | Verify wait raises TimeoutError when no result is delivered within the timeout. | None. | timeout_s=0.01. | 1. create_slot. 2. wait without delivering. | Raises TimeoutError matching the request_id. |
+| TC-PC-03 | FR-IE-05 | TestPipelineCallbackServicer | DeliverResult resolves slot | Verify that calling DeliverResult on the servicer deserializes the tensor and delivers to ResultStore. | Slot created in store. | output shape (1, 3, 50280), latencies [8.5, 11.2], memory [240, 310]. | 1. create_slot. 2. Call DeliverResult. 3. wait. | acknowledged=True; result has correct tensor shape, latencies, memory. |
+| TC-PC-04 | FR-IE-04, FR-IE-05 | TestPipelineRunnerLoad | load sends LoadShard to each worker | Verify load() calls WorkerClient.load_shard once per assignment. | Mocked ModelStore and WorkerClient. | Two-node plan. | 1. Call load(). | load_shard.call_count == 2. |
+| TC-PC-05 | FR-IE-04, FR-IE-05 | TestPipelineRunnerLoad | load sends correct next_worker_address to first worker | Verify the first LoadShard request carries the second worker's "ip:port". | Mocked ModelStore and WorkerClient. | Two-node plan: node-0 next_worker="192.168.1.11:50052". | 1. Call load(). 2. Inspect first load_shard call_args. | first_request.next_worker_address == "192.168.1.11:50052". |
+| TC-PC-06 | FR-IE-04, FR-IE-05 | TestPipelineRunnerLoad | load sends empty next_worker_address to last worker | Verify the last LoadShard request has next_worker_address="". | Mocked ModelStore and WorkerClient. | Two-node plan. | 1. Call load(). 2. Inspect last load_shard call_args. | last_request.next_worker_address == "". |
+| TC-PC-07 | FR-IE-04, FR-IE-05 | TestPipelineRunnerRunForward | run_forward sends RunShard only to first worker | Verify WorkerClient is created exactly once, targeting the first worker's address. | Mocked WorkerClient whose run_shard delivers a result. | Two-node plan, first node at "192.168.1.10:50052". | 1. Call run_forward. | WorkerClient called once with "192.168.1.10:50052". |
+| TC-PC-08 | FR-IE-04, FR-IE-05 | TestPipelineRunnerRunForward | run_forward includes request_id and callback_address | Verify the RunShard request carries a non-empty UUID and the orchestrator callback address. | Mocked WorkerClient delivering a result. | callback_address="localhost:50060". | 1. Call run_forward. 2. Inspect run_shard call_args. | request_id != "", orchestrator_callback_address == "localhost:50060". |
+| TC-PC-09 | FR-IE-04, FR-IE-05 | TestPipelineRunnerRunForward | run_forward returns PipelineResult after future resolves | Verify run_forward returns the correct PipelineResult once the slot is delivered. | Mocked WorkerClient whose run_shard side_effect delivers to the store. | expected_tensor shape (1, 3, 50280), latencies [10.0, 12.0]. | 1. Call run_forward. | Returns PipelineResult with matching tensor and latencies. |
+| TC-PC-10 | FR-IE-04, FR-IE-05 | TestPipelineRunnerRunForward | run_forward raises on timeout | Verify run_forward raises TimeoutError when no DeliverResult arrives before timeout_s. | Mocked WorkerClient that does NOT deliver a result. | timeout_s=0.01. | 1. Call run_forward. | Raises TimeoutError. |
+| TC-PC-11 | FR-IE-04, FR-IE-05 | TestPipelineRunnerUnload | unload sends UnloadShard to all workers | Verify unload() calls WorkerClient.unload_shard once per assignment. | Mocked WorkerClient. | Two-node plan. | 1. Call unload(). | unload_shard.call_count == 2. |
+
 ## Integration Tests
 
 ### Heartbeat Flow (`tests/integration/test_heartbeat_flow.py`)

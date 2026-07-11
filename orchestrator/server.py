@@ -14,7 +14,7 @@ from concurrent import futures
 
 import grpc
 
-from proto.generated import nodes_pb2_grpc
+from proto.generated import inference_pb2_grpc, nodes_pb2_grpc
 from orchestrator.config import (
     DEFAULT_GRPC_PORT,
     DEFAULT_HEARTBEAT_INTERVAL_S,
@@ -22,6 +22,7 @@ from orchestrator.config import (
     DEFAULT_REAPER_INTERVAL_S,
 )
 from orchestrator.node_registry import NodeRegistry
+from orchestrator.pipeline import PipelineCallbackServicer, ResultStore
 from orchestrator.service import NodeServiceServicer
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,9 @@ def create_server(
     """
     Create and configure the orchestrator gRPC server.
 
+    Registers both NodeService (heartbeat/registry) and
+    PipelineCallbackService (result delivery) on the same server.
+
     Parameters
     ----------
     port : int
@@ -76,9 +80,9 @@ def create_server(
 
     Returns
     -------
-    tuple[grpc.Server, NodeRegistry, threading.Event]
-        The configured server (not yet started), the registry, and
-        the reaper stop event.
+    tuple[grpc.Server, NodeRegistry, threading.Event, ResultStore]
+        The configured server (not yet started), the registry, the reaper
+        stop event, and the pipeline result store.
     """
     registry = NodeRegistry(
         heartbeat_interval_s=heartbeat_interval_s,
@@ -89,13 +93,19 @@ def create_server(
         registry, heartbeat_interval_ms=heartbeat_interval_ms
     )
 
+    result_store = ResultStore()
+    callback_servicer = PipelineCallbackServicer(result_store)
+
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=max_workers))
     nodes_pb2_grpc.add_NodeServiceServicer_to_server(servicer, server)
+    inference_pb2_grpc.add_PipelineCallbackServiceServicer_to_server(
+        callback_servicer, server
+    )
     server.add_insecure_port(f"[::]:{port}")
 
     stop_event = threading.Event()
 
-    return server, registry, stop_event
+    return server, registry, stop_event, result_store
 
 
 def main():
@@ -137,7 +147,7 @@ def main():
         format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
     )
 
-    server, registry, stop_event = create_server(
+    server, registry, stop_event, _ = create_server(
         port=args.port,
         heartbeat_interval_s=args.heartbeat_interval,
         missed_threshold=args.missed_threshold,
