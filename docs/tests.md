@@ -229,6 +229,19 @@ Component under test: `orchestrator.dispatch` - pure layer partitioning and shar
 | TC-DE-12 | FR-DE-02 | TestPlanDispatch | Middle node has no first or last flag | Verify that a middle assignment has is_first=False and is_last=False. | Registry with three available nodes. | layers=24, 3 nodes. | 1. Call `plan_dispatch`. 2. Check assignments[1]. | is_first=False, is_last=False. |
 | TC-DE-13 | FR-DE-03 | TestPlanDispatch | Plan carries manifest metadata | Verify DispatchPlan stores arch, model_name, and total_layers from the manifest. | Registry with one available node. | arch="mamba", name="mamba-130m", layers=24. | 1. Call `plan_dispatch`. 2. Check plan fields. | arch="mamba", model_name="mamba-130m", total_layers=24. |
 
+### Worker Client (`tests/unit/test_worker_client.py`)
+
+Component under test: `orchestrator.worker_client.WorkerClient` and `PipelineCallbackClient` - thin gRPC stub wrappers for inter-node communication. Tests mock `grpc.insecure_channel` and the stub constructors to avoid real network connections.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-WC-01 | FR-IE-04 | TestWorkerClient | load_shard delegates to stub | Verify load_shard calls stub.LoadShard with the provided request. | Mocked channel and InferenceServiceStub. | LoadShardRequest(model_name="mamba-130m"). | 1. Create WorkerClient with mocked stub. 2. Call `load_shard(request)`. | stub.LoadShard called once with request. |
+| TC-WC-02 | FR-IE-04 | TestWorkerClient | run_shard delegates to stub | Verify run_shard calls stub.RunShard with the provided request. | Mocked channel and InferenceServiceStub. | RunShardRequest(model_name="mamba-130m"). | 1. Create WorkerClient with mocked stub. 2. Call `run_shard(request)`. | stub.RunShard called once with request. |
+| TC-WC-03 | FR-IE-04 | TestWorkerClient | unload_shard delegates to stub | Verify unload_shard calls stub.UnloadShard with the provided request. | Mocked channel and InferenceServiceStub. | UnloadShardRequest(model_name="mamba-130m"). | 1. Create WorkerClient with mocked stub. 2. Call `unload_shard(request)`. | stub.UnloadShard called once with request. |
+| TC-WC-04 | FR-IE-04 | TestWorkerClient | Context manager closes channel | Verify that exiting the context manager closes the gRPC channel exactly once. | Mocked channel and InferenceServiceStub. | address="localhost:50052". | 1. Use WorkerClient as context manager. 2. Exit context. | channel.close() called once. |
+| TC-WC-05 | FR-IE-04 | TestWorkerClient | Channel configured with large message size | Verify the channel is created with max_send and max_receive options of at least 512 MB. | None. | address="localhost:50052". | 1. Create WorkerClient. 2. Inspect options passed to grpc.insecure_channel. | grpc.max_send_message_length >= 512 MB and grpc.max_receive_message_length >= 512 MB. |
+| TC-WC-06 | FR-IE-05 | TestPipelineCallbackClient | deliver_result delegates to stub | Verify deliver_result calls stub.DeliverResult with the provided request. | Mocked channel and PipelineCallbackServiceStub. | DeliverResultRequest(request_id="req-abc"). | 1. Create PipelineCallbackClient with mocked stub. 2. Call `deliver_result(request)`. | stub.DeliverResult called once with request. |
+
 ## Integration Tests
 
 ### Heartbeat Flow (`tests/integration/test_heartbeat_flow.py`)
