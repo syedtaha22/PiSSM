@@ -16,6 +16,7 @@ from concurrent import futures
 import grpc
 
 from orchestrator.config import DEFAULT_HEARTBEAT_INTERVAL_S
+from orchestrator.worker_client import _CHANNEL_OPTIONS
 from proto.generated import inference_pb2_grpc
 from inference.service import InferenceServiceServicer
 from worker.heartbeat import HeartbeatClient
@@ -73,7 +74,10 @@ def main():
     )
 
     inference_servicer = InferenceServiceServicer()
-    inference_server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
+    inference_server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=4),
+        options=_CHANNEL_OPTIONS,
+    )
     inference_pb2_grpc.add_InferenceServiceServicer_to_server(
         inference_servicer, inference_server
     )

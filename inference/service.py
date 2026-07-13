@@ -215,7 +215,7 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
                     ) as client:
                         client.deliver_result(deliver_request)
 
-                logger.info(
+                logger.debug(
                     "Pipeline shard '%s': %.1f ms, forwarded",
                     request.model_name,
                     elapsed_ms,
@@ -251,6 +251,27 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
                 success=False,
                 error_message=str(e),
             )
+
+    def Ping(self, request, context):
+        """
+        Echo the request payload back unchanged.
+
+        Used by benchmark_network.py to measure round-trip latency and
+        throughput at multiple payload sizes.
+
+        Parameters
+        ----------
+        request : inference_pb2.PingRequest
+            Carries an arbitrary byte payload.
+        context : grpc.ServicerContext
+            The gRPC call context.
+
+        Returns
+        -------
+        inference_pb2.PingResponse
+            The same payload echoed back.
+        """
+        return inference_pb2.PingResponse(payload=request.payload)
 
     def UnloadShard(self, request, context):
         """
