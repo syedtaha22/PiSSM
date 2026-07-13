@@ -12,27 +12,34 @@ PiSSM runs Mamba, S4, and small LLM inference across a cluster of Raspberry Pi 5
 
 ```mermaid
 flowchart TB
+    classDef complete color:#009900;
+    classDef inprogress color:#aaaa00;
+    classDef todo color:#ee4444;
+
 
     subgraph UserLayer["User Layer"]
-        TUI["Textual TUI"] ~~~ WEB["React WebUI"]
+        TUI["Textual TUI"]:::todo ~~~ WEB["React WebUI"]:::todo
     end
 
     UserLayer --> |"HTTP (FastAPI)"| ORCH
 
     subgraph ORCH["Orchestrator Node"]
-        REG["Node Registry<br/>(heartbeat)"] ~~~ DISP["Dispatch Engine"] ~~~ MODEL["Model Registry"]
+        REG["Node Registry<br/>(heartbeat)"]:::complete ~~~ DISP["Dispatch Engine"]:::inprogress ~~~ MODEL["Model Registry"]:::complete
     end
 
     ORCH -->|"gRPC"| W1
     ORCH -->|"gRPC"| W2
     ORCH -->|"gRPC"| W3
 
-    W1["Worker 1 (daemon)"]
-    W2["Worker 2 (daemon)"]
-    W3["Worker 3 (daemon)"]
+
+    W1["Worker 1 (daemon)"]:::complete
+    W2["Worker 2 (daemon)"]:::complete
+    W3["Worker 3 (daemon)"]:::complete
 ```
 
 Each Pi runs a background daemon that broadcasts presence and hardware state. The orchestrator maintains a live node registry and handles dispatch. Model layers are split into contiguous shards assigned to worker nodes. Activations pass node-to-node through the pipeline over gRPC.
+
+(Green: Complete, Yellow: In Progress, Red: Todo)
 
 ## Supported Architectures
 
