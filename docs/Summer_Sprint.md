@@ -30,7 +30,7 @@ Alongside the loader, the inference daemon is written: the worker process that r
 
 ## Layer Sharding Across Two Nodes
 
-Dispatch Rule 2 is implemented in the orchestrator: given a model's layer count and the number of available nodes, layers are split into contiguous groups with one group assigned per node. For Mamba-130M at 48 layers across 2 nodes, node 0 takes layers 0-23 and node 1 takes layers 24-47.
+Dispatch Rule 2 is implemented in the orchestrator: given a model's layer count and the number of available nodes, layers are split into contiguous groups with one group assigned per node. For Mamba-130M at 24 layers across 2 nodes, node 0 takes layers 0-11 and node 1 takes layers 12-23.
 
 The inference pipeline runs as follows:
 
