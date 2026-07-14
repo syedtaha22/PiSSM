@@ -77,6 +77,12 @@ CSV_COLUMNS = [
 logger = logging.getLogger(__name__)
 
 
+def _get_local_ip() -> str:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+
+
 def compute_stats(latencies):
     """
     Compute summary statistics from a list of latency measurements.
@@ -377,7 +383,7 @@ def main():
         format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
     )
 
-    callback_host = args.callback_host or (socket.gethostname() + ".local")
+    callback_host = args.callback_host or _get_local_ip()
     callback_address = f"{callback_host}:{args.callback_port}"
 
     registry = NodeRegistry(

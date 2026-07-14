@@ -52,6 +52,12 @@ DEFAULT_CALLBACK_PORT = 50060
 logger = logging.getLogger(__name__)
 
 
+def _get_local_ip() -> str:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+
+
 def start_node_server(registry, port, heartbeat_interval_s, missed_threshold):
     """
     Start the NodeService gRPC server for worker heartbeats.
@@ -218,7 +224,7 @@ def main():
         format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
     )
 
-    callback_host = args.callback_host or (socket.gethostname() + ".local")
+    callback_host = args.callback_host or _get_local_ip()
     callback_address = f"{callback_host}:{args.callback_port}"
 
     registry = NodeRegistry(
