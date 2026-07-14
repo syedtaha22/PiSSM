@@ -8,15 +8,19 @@ orchestrates LoadShard, the initial RunShard fire-and-forward, and
 UnloadShard across all workers in a DispatchPlan.
 """
 
+import logging
 import threading
 import uuid
 from dataclasses import dataclass
 
 import torch
+from tqdm import tqdm
 
 from inference.tensor_utils import deserialize_tensor, serialize_tensor
 from orchestrator.worker_client import WorkerClient
 from proto.generated import inference_pb2, inference_pb2_grpc
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -224,27 +228,33 @@ class PipelineRunner:
         """
         Extract shard bytes and send LoadShard to each worker in order.
         """
-        for assignment in self._plan.assignments:
-            weights_bytes, config_json = self._model_store.extract_shard(
-                self._plan.arch,
-                assignment.layer_start,
-                assignment.layer_end,
-                assignment.is_first,
-                assignment.is_last,
-            )
-            request = inference_pb2.LoadShardRequest(
-                model_name=self._plan.model_name,
-                arch=self._plan.arch,
-                layer_start=assignment.layer_start,
-                layer_end=assignment.layer_end,
-                total_layers=self._plan.total_layers,
-                next_worker_address=assignment.next_worker_address,
-                shard_weights=weights_bytes,
-                model_config_json=config_json,
-            )
-            addr = f"{assignment.ip_address}:{assignment.inference_port}"
-            with WorkerClient(addr) as client:
-                client.load_shard(request)
+        n = len(self._plan.assignments)
+        with tqdm(total=n, desc="distributing shards", unit="shard") as pbar:
+            for assignment in self._plan.assignments:
+                addr = f"{assignment.ip_address}:{assignment.inference_port}"
+                pbar.set_description(
+                    f"shard [{assignment.layer_start},{assignment.layer_end}) -> {addr}"
+                )
+                weights_bytes, config_json = self._model_store.extract_shard(
+                    self._plan.arch,
+                    assignment.layer_start,
+                    assignment.layer_end,
+                    assignment.is_first,
+                    assignment.is_last,
+                )
+                request = inference_pb2.LoadShardRequest(
+                    model_name=self._plan.model_name,
+                    arch=self._plan.arch,
+                    layer_start=assignment.layer_start,
+                    layer_end=assignment.layer_end,
+                    total_layers=self._plan.total_layers,
+                    next_worker_address=assignment.next_worker_address,
+                    shard_weights=weights_bytes,
+                    model_config_json=config_json,
+                )
+                with WorkerClient(addr) as client:
+                    client.load_shard(request)
+                pbar.update(1)
 
     def run_forward(self, input_tensor: torch.Tensor) -> PipelineResult:
         """

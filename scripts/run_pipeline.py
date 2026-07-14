@@ -218,7 +218,7 @@ def main():
         format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
     )
 
-    callback_host = args.callback_host or socket.gethostname()
+    callback_host = args.callback_host or (socket.gethostname() + ".local")
     callback_address = f"{callback_host}:{args.callback_port}"
 
     registry = NodeRegistry(
