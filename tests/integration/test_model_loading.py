@@ -10,9 +10,11 @@ import subprocess
 import sys
 
 import pytest
+import torch
 
 from inference.manifest import load_manifest
 from inference.loader import generate, load_model, tokenize, unload_model
+from inference.shard import MambaShardModule
 
 MANIFEST_PATH = "manifests/mamba-130m.yaml"
 REFERENCE_PROMPT = "Hey how are you doing?"
@@ -123,3 +125,58 @@ class TestEndToEndInference:
             if "Warning" in line or "warning" in line or "ERROR" in line
         ]
         assert warning_lines == [], f"Unexpected warnings: {warning_lines}"
+
+
+@pytest.mark.slow
+class TestShardRoundtrip:
+    """
+    Tests that shard extraction and reconstruction preserve model output.
+
+    Extracts two shards from a loaded Mamba-130M, reconstructs each from
+    bytes, and verifies that running them in sequence produces the same
+    logits as a forward pass through the full model.
+    """
+
+    def test_two_shard_roundtrip_matches_full_model(self, model_handle):
+        """
+        Extracting two shards, serializing, reconstructing, and running
+        them in pipeline order produces logits matching the full model.
+        """
+        import io
+
+        model = model_handle.model
+        total_layers = len(model.backbone.layers)
+        mid = total_layers // 2
+
+        shard0 = MambaShardModule.from_model(
+            model, 0, mid, is_first=True, is_last=False
+        )
+        shard1 = MambaShardModule.from_model(
+            model, mid, total_layers, is_first=False, is_last=True
+        )
+
+        def roundtrip(shard, layer_start, layer_end, is_first, is_last):
+            buf = io.BytesIO()
+            torch.save(shard.state_dict(), buf)
+            weights_bytes = buf.getvalue()
+            config_json = model.config.to_json_string().encode()
+            return MambaShardModule.from_bytes(
+                weights_bytes, config_json, layer_start, layer_end, is_first, is_last
+            )
+
+        reconstructed0 = roundtrip(shard0, 0, mid, True, False)
+        reconstructed1 = roundtrip(shard1, mid, total_layers, False, True)
+
+        reconstructed0.eval()
+        reconstructed1.eval()
+        model.eval()
+
+        input_ids = torch.tensor([[101, 2023, 3045]], dtype=torch.int64)
+
+        with torch.no_grad():
+            full_logits = model(input_ids).logits
+            hidden = reconstructed0(input_ids)
+            pipeline_logits = reconstructed1(hidden)
+
+        assert pipeline_logits.shape == full_logits.shape
+        assert torch.allclose(pipeline_logits, full_logits, atol=1e-5)

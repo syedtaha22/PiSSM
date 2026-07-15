@@ -39,6 +39,9 @@ class HeartbeatClient:
         This node's unique identifier.
     interval_s : float
         Seconds between heartbeats.
+    inference_port : int
+        gRPC port on which this node's InferenceService is listening.
+        Reported to the orchestrator so it can open WorkerClient connections.
     """
 
     def __init__(
@@ -46,10 +49,12 @@ class HeartbeatClient:
         orchestrator_address: str,
         node_id: str,
         interval_s: float = 2.0,
+        inference_port: int = 0,
     ) -> None:
         self._orchestrator_address = orchestrator_address
         self._node_id = node_id
         self._interval_s = interval_s
+        self._inference_port = inference_port
         self._stop_event = threading.Event()
         self._thread = None
         self._channel = None
@@ -114,6 +119,7 @@ class HeartbeatClient:
                     os_name=get_os_name(),
                     os_version=get_os_version(),
                     timestamp=int(time.time()),
+                    inference_port=self._inference_port,
                 )
                 response = stub.Heartbeat(request, timeout=self._interval_s)
 

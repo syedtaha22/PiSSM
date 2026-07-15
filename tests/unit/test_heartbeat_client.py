@@ -62,6 +62,7 @@ class TestHeartbeatClientLifecycle:
             orchestrator_address=address,
             node_id="test-node",
             interval_s=TEST_INTERVAL_S,
+            inference_port=50052,
         )
         client.start()
         time.sleep(0.5)
@@ -83,6 +84,7 @@ class TestHeartbeatClientLifecycle:
             orchestrator_address=address,
             node_id="test-node",
             interval_s=TEST_INTERVAL_S,
+            inference_port=50052,
         )
         client.start()
         assert client.is_running is True
@@ -103,6 +105,7 @@ class TestHeartbeatClientLifecycle:
             orchestrator_address=address,
             node_id="test-node",
             interval_s=TEST_INTERVAL_S,
+            inference_port=50052,
         )
         client.start()
         time.sleep(1.0)

@@ -20,10 +20,12 @@ from proto.generated import inference_pb2_grpc
 from inference.loader import (
     ModelHandle,
     load_model,
+    load_shard_from_bytes,
     unload_model,
 )
 from inference.manifest import ModelManifest
 from inference.tensor_utils import deserialize_tensor, serialize_tensor
+from orchestrator.worker_client import PipelineCallbackClient, WorkerClient
 
 logger = logging.getLogger(__name__)
 
@@ -67,17 +69,34 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
                 )
 
         try:
-            manifest = ModelManifest(
-                name=request.model_name,
-                arch=request.arch,
-                checkpoint=request.checkpoint,
-                layers=0,
-                hidden_dim=0,
-                state_dim=0,
-                input_type="text",
-                tokenizer=request.tokenizer,
-            )
-            handle = load_model(manifest)
+            if request.shard_weights:
+                is_first = request.layer_start == 0
+                is_last = request.layer_end == request.total_layers
+                handle = load_shard_from_bytes(
+                    shard_weights_bytes=request.shard_weights,
+                    model_config_json_bytes=request.model_config_json,
+                    arch=request.arch,
+                    layer_start=request.layer_start,
+                    layer_end=request.layer_end,
+                    is_first=is_first,
+                    is_last=is_last,
+                    next_worker_address=request.next_worker_address,
+                    model_name=request.model_name,
+                )
+                layers_loaded = request.layer_end - request.layer_start
+            else:
+                manifest = ModelManifest(
+                    name=request.model_name,
+                    arch=request.arch,
+                    checkpoint=request.checkpoint,
+                    layers=0,
+                    hidden_dim=0,
+                    state_dim=0,
+                    input_type="text",
+                    tokenizer=request.tokenizer,
+                )
+                handle = load_model(manifest)
+                layers_loaded = handle.manifest.layers
 
             with self._lock:
                 self._models[request.model_name] = handle
@@ -91,7 +110,7 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
             return inference_pb2.LoadShardResponse(
                 success=True,
                 memory_used_mb=handle.memory_mb,
-                layers_loaded=handle.manifest.layers,
+                layers_loaded=layers_loaded,
             )
 
         except Exception as e:
@@ -141,8 +160,12 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
 
             process = psutil.Process()
             start_time = time.perf_counter()
+            pipeline_mode = bool(request.orchestrator_callback_address)
 
-            if request.generate_mode:
+            if pipeline_mode:
+                with torch.no_grad():
+                    output_tensor = handle.model(input_tensor)
+            elif request.generate_mode:
                 with torch.no_grad():
                     output_tensor = handle.model.generate(
                         input_tensor,
@@ -156,6 +179,48 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000
             peak_memory_mb = process.memory_info().rss // (1024 * 1024)
+
+            if pipeline_mode:
+                accumulated_latencies = list(request.node_latencies_ms) + [elapsed_ms]
+                accumulated_memory = list(request.node_peak_memory_mb) + [
+                    peak_memory_mb
+                ]
+                out_data, out_shape, out_dtype = serialize_tensor(output_tensor)
+
+                if handle.next_worker_address:
+                    next_request = inference_pb2.RunShardRequest(
+                        model_name=request.model_name,
+                        input_tensor=out_data,
+                        input_shape=out_shape,
+                        input_dtype=out_dtype,
+                        max_new_tokens=request.max_new_tokens,
+                        request_id=request.request_id,
+                        orchestrator_callback_address=request.orchestrator_callback_address,
+                        node_latencies_ms=accumulated_latencies,
+                        node_peak_memory_mb=accumulated_memory,
+                    )
+                    with WorkerClient(handle.next_worker_address) as client:
+                        client.run_shard(next_request)
+                else:
+                    deliver_request = inference_pb2.DeliverResultRequest(
+                        request_id=request.request_id,
+                        output_tensor=out_data,
+                        output_shape=out_shape,
+                        output_dtype=out_dtype,
+                        node_latencies_ms=accumulated_latencies,
+                        node_peak_memory_mb=accumulated_memory,
+                    )
+                    with PipelineCallbackClient(
+                        request.orchestrator_callback_address
+                    ) as client:
+                        client.deliver_result(deliver_request)
+
+                logger.debug(
+                    "Pipeline shard '%s': %.1f ms, forwarded",
+                    request.model_name,
+                    elapsed_ms,
+                )
+                return inference_pb2.RunShardResponse(success=True)
 
             if isinstance(output_tensor, torch.Tensor):
                 out_data, out_shape, out_dtype = serialize_tensor(output_tensor)
@@ -186,6 +251,27 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
                 success=False,
                 error_message=str(e),
             )
+
+    def Ping(self, request, context):
+        """
+        Echo the request payload back unchanged.
+
+        Used by benchmark_network.py to measure round-trip latency and
+        throughput at multiple payload sizes.
+
+        Parameters
+        ----------
+        request : inference_pb2.PingRequest
+            Carries an arbitrary byte payload.
+        context : grpc.ServicerContext
+            The gRPC call context.
+
+        Returns
+        -------
+        inference_pb2.PingResponse
+            The same payload echoed back.
+        """
+        return inference_pb2.PingResponse(payload=request.payload)
 
     def UnloadShard(self, request, context):
         """

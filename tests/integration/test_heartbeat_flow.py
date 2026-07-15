@@ -21,6 +21,7 @@ def make_heartbeat_request(
     os_name="Linux",
     os_version="6.6.31+rpt-rpi-2712",
     timestamp=1000000,
+    inference_port=50052,
 ):
     """
     Build a HeartbeatRequest with sensible defaults.
@@ -45,6 +46,8 @@ def make_heartbeat_request(
         OS kernel version string.
     timestamp : int
         Unix timestamp in seconds.
+    inference_port : int
+        gRPC port on which the node's InferenceService is listening.
 
     Returns
     -------
@@ -61,6 +64,7 @@ def make_heartbeat_request(
         os_name=os_name,
         os_version=os_version,
         timestamp=timestamp,
+        inference_port=inference_port,
     )
 
 
@@ -132,6 +136,7 @@ class TestHeartbeatRoundtrip:
         assert node.arch == "aarch64"
         assert node.os_name == "Linux"
         assert node.os_version == "6.6.31+rpt-rpi-2712"
+        assert node.inference_port == 50052
         assert node.status == "available"
 
 

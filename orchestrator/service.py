@@ -71,9 +71,10 @@ class NodeServiceServicer(nodes_pb2_grpc.NodeServiceServicer):
             arch=request.arch,
             os_name=request.os_name,
             os_version=request.os_version,
+            inference_port=request.inference_port,
         )
 
-        logger.info(
+        logger.debug(
             "Heartbeat from %s (%s), RAM: %d/%d MB",
             request.node_id,
             request.ip_address,
