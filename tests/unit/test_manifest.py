@@ -9,7 +9,7 @@ tmp_path fixture. No torch dependency.
 import pytest
 import yaml
 
-from inference.manifest import ManifestError, load_manifest
+from inference.manifest import ManifestError, load_manifest, manifest_from_dict
 
 VALID_MANIFEST_DATA = {
     "name": "mamba-130m",
@@ -160,6 +160,31 @@ class TestInvalidValues:
 
         with pytest.raises(ManifestError, match="name"):
             load_manifest(path)
+
+
+class TestManifestFromDict:
+    """
+    Tests for constructing a ModelManifest directly from a dict,
+    bypassing the file-loading path.
+    """
+
+    def test_valid_dict_produces_manifest(self):
+        """
+        A valid dict produces a ModelManifest with all fields set.
+        """
+        manifest = manifest_from_dict(VALID_MANIFEST_DATA)
+
+        assert manifest.name == "mamba-130m"
+        assert manifest.checkpoint == "state-spaces/mamba-130m-hf"
+
+    def test_invalid_dict_raises_manifest_error(self):
+        """
+        An invalid dict raises ManifestError, same as the file-loading path.
+        """
+        data = {**VALID_MANIFEST_DATA, "arch": "rnn"}
+
+        with pytest.raises(ManifestError, match="arch"):
+            manifest_from_dict(data)
 
 
 class TestFileErrors:

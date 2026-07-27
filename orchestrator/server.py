@@ -1,26 +1,32 @@
 """
-Orchestrator gRPC server entry point.
+Orchestrator process entry point.
 
 Starts the gRPC server with the NodeServiceServicer, launches a
 background reaper thread that periodically marks unresponsive nodes
-as unavailable, and blocks until interrupted.
+as unavailable, and serves the FastAPI HTTP API (consumed by the TUI
+and WebUI) in the same process. The gRPC server runs on its own
+thread pool; the HTTP API runs under uvicorn as the main blocking
+call.
 """
 
 import argparse
 import logging
-import signal
 import threading
 from concurrent import futures
 
 import grpc
+import uvicorn
 
 from proto.generated import inference_pb2_grpc, nodes_pb2_grpc
+from inference.model_registry import ModelRegistry
 from orchestrator.config import (
     DEFAULT_GRPC_PORT,
     DEFAULT_HEARTBEAT_INTERVAL_S,
+    DEFAULT_HTTP_PORT,
     DEFAULT_MISSED_HEARTBEATS_THRESHOLD,
     DEFAULT_REAPER_INTERVAL_S,
 )
+from orchestrator.http_api import create_app
 from orchestrator.node_registry import NodeRegistry
 from orchestrator.pipeline import PipelineCallbackServicer, ResultStore
 from orchestrator.service import NodeServiceServicer
@@ -60,10 +66,12 @@ def create_server(
     max_workers=10,
 ):
     """
-    Create and configure the orchestrator gRPC server.
+    Create and configure the orchestrator gRPC server and HTTP API.
 
     Registers both NodeService (heartbeat/registry) and
-    PipelineCallbackService (result delivery) on the same server.
+    PipelineCallbackService (result delivery) on the same gRPC server,
+    and builds a FastAPI app wired to the same NodeRegistry and a new
+    ModelRegistry.
 
     Parameters
     ----------
@@ -80,14 +88,16 @@ def create_server(
 
     Returns
     -------
-    tuple[grpc.Server, NodeRegistry, threading.Event, ResultStore]
-        The configured server (not yet started), the registry, the reaper
-        stop event, and the pipeline result store.
+    tuple[grpc.Server, NodeRegistry, ModelRegistry, threading.Event, ResultStore, FastAPI]
+        The configured gRPC server (not yet started), the node registry,
+        the model registry, the reaper stop event, the pipeline result
+        store, and the FastAPI HTTP app (not yet running).
     """
     registry = NodeRegistry(
         heartbeat_interval_s=heartbeat_interval_s,
         missed_threshold=missed_threshold,
     )
+    model_registry = ModelRegistry()
     heartbeat_interval_ms = int(heartbeat_interval_s * 1000)
     servicer = NodeServiceServicer(
         registry, heartbeat_interval_ms=heartbeat_interval_ms
@@ -105,7 +115,9 @@ def create_server(
 
     stop_event = threading.Event()
 
-    return server, registry, stop_event, result_store
+    app = create_app(registry, model_registry)
+
+    return server, registry, model_registry, stop_event, result_store, app
 
 
 def main():
@@ -113,7 +125,10 @@ def main():
     Entry point for the orchestrator process.
 
     Parses command-line arguments, starts the gRPC server and reaper
-    thread, and blocks until interrupted with SIGINT or SIGTERM.
+    thread in the background, then runs the FastAPI HTTP API under
+    uvicorn as the main blocking call. uvicorn installs its own
+    SIGINT/SIGTERM handlers and shuts down gracefully on either; once
+    it returns, the gRPC server and reaper are stopped too.
     """
     parser = argparse.ArgumentParser(description="PiSSM Orchestrator")
     parser.add_argument(
@@ -121,6 +136,12 @@ def main():
         type=int,
         default=DEFAULT_GRPC_PORT,
         help=f"gRPC server port (default: {DEFAULT_GRPC_PORT})",
+    )
+    parser.add_argument(
+        "--http-port",
+        type=int,
+        default=DEFAULT_HTTP_PORT,
+        help=f"HTTP API port for the TUI/WebUI (default: {DEFAULT_HTTP_PORT})",
     )
     parser.add_argument(
         "--heartbeat-interval",
@@ -147,7 +168,7 @@ def main():
         format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
     )
 
-    server, registry, stop_event, _ = create_server(
+    server, registry, model_registry, stop_event, _, app = create_server(
         port=args.port,
         heartbeat_interval_s=args.heartbeat_interval,
         missed_threshold=args.missed_threshold,
@@ -155,7 +176,7 @@ def main():
     )
 
     server.start()
-    logger.info("Orchestrator started on port %d", args.port)
+    logger.info("Orchestrator gRPC server started on port %d", args.port)
     logger.info(
         "Heartbeat interval=%.1fs, missed threshold=%d, timeout=%.1fs",
         args.heartbeat_interval,
@@ -170,19 +191,13 @@ def main():
     )
     reaper_thread.start()
 
-    shutdown_event = threading.Event()
-
-    def handle_signal(signum, frame):
-        logger.info("Received signal %d, shutting down", signum)
+    logger.info("Orchestrator HTTP API starting on port %d", args.http_port)
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=args.http_port, log_level="info")
+    finally:
         stop_event.set()
-        shutdown_event.set()
-
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
-
-    shutdown_event.wait()
-    server.stop(grace=5)
-    logger.info("Orchestrator stopped")
+        server.stop(grace=5)
+        logger.info("Orchestrator stopped")
 
 
 if __name__ == "__main__":

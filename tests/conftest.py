@@ -3,15 +3,20 @@ Shared test fixtures for integration tests.
 
 Provides an in-process gRPC server with the NodeServiceServicer
 registered, and a channel connected to it. No real network - the
-server binds to localhost on an OS-assigned ephemeral port.
+server binds to localhost on an OS-assigned ephemeral port. Also
+provides a FastAPI TestClient wired to real NodeRegistry and
+ModelRegistry instances for HTTP API tests.
 """
 
 from concurrent import futures
 
 import grpc
 import pytest
+from fastapi.testclient import TestClient
 
 from proto.generated import nodes_pb2_grpc
+from inference.model_registry import ModelRegistry
+from orchestrator.http_api import create_app
 from orchestrator.node_registry import NodeRegistry
 from orchestrator.service import NodeServiceServicer
 
@@ -22,6 +27,36 @@ def registry():
     Return a fresh NodeRegistry instance.
     """
     return NodeRegistry()
+
+
+@pytest.fixture
+def model_registry():
+    """
+    Return a fresh ModelRegistry instance.
+    """
+    return ModelRegistry()
+
+
+@pytest.fixture
+def fastapi_test_client(registry, model_registry):
+    """
+    Return a FastAPI TestClient wired to the registry fixtures.
+
+    Parameters
+    ----------
+    registry : NodeRegistry
+        The node registry instance shared between the app and the test.
+    model_registry : ModelRegistry
+        The model registry instance shared between the app and the test.
+
+    Yields
+    ------
+    starlette.testclient.TestClient
+        A test client for the orchestrator's FastAPI app.
+    """
+    app = create_app(registry, model_registry)
+    with TestClient(app) as client:
+        yield client
 
 
 @pytest.fixture

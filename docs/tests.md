@@ -151,6 +151,8 @@ Component under test: `inference.manifest` - YAML manifest parsing and validatio
 | TC-MF-07 | FR-MR-03 | TestInvalidValues | Layers negative | Verify negative layers raises ManifestError. | None. | layers=-1. | 1. Call `load_manifest()`. | Raises ManifestError matching "layers". |
 | TC-MF-08 | FR-MR-03 | TestInvalidValues | Name with spaces | Verify name with spaces raises ManifestError. | None. | name="my model". | 1. Call `load_manifest()`. | Raises ManifestError matching "name". |
 | TC-MF-09 | FR-MR-03 | TestFileErrors | File not found | Verify nonexistent path raises ManifestError. | None. | path="/nonexistent/manifest.yaml". | 1. Call `load_manifest()`. | Raises ManifestError matching "not found". |
+| TC-MF-10 | FR-MR-01 | TestManifestFromDict | Valid dict produces manifest | Verify a valid dict (not from a file) produces a ModelManifest with all fields. | None. | Full valid manifest data. | 1. Call `manifest_from_dict()` with the dict directly. | Returns ModelManifest with matching fields. |
+| TC-MF-11 | FR-MR-03 | TestManifestFromDict | Invalid dict raises | Verify an invalid dict raises ManifestError, same as the file-loading path. | None. | arch="rnn". | 1. Call `manifest_from_dict()` with the dict directly. | Raises ManifestError matching "arch". |
 
 ### Model Registry (`tests/unit/test_model_registry.py`)
 
@@ -166,6 +168,23 @@ Component under test: `inference.model_registry.ModelRegistry` - thread-safe in-
 | TC-MR-06 | FR-MR-05 | TestDeleteModel | Delete existing | Verify deleting an existing model returns True and removes it. | Registry with one model. | name="mamba-130m". | 1. Delete. 2. Call `get(name)`. | Returns True, get returns None. |
 | TC-MR-07 | FR-MR-05 | TestDeleteModel | Delete nonexistent | Verify deleting a nonexistent model returns False. | Empty registry. | name="nonexistent". | 1. Call `delete("nonexistent")`. | Returns False. |
 | TC-MR-08 | NFR-02 | TestThreadSafety | Concurrent register | Verify 20 threads registering different models causes no corruption. | Empty registry. | 20 unique model names. | 1. Spawn 20 threads. 2. Join. 3. Call `list_models()`. | No exceptions, 20 models in registry. |
+
+### HTTP API (`tests/unit/test_http_api.py`)
+
+Component under test: `orchestrator.http_api` - the FastAPI app that exposes the node and model registries over HTTP for the TUI and WebUI. Tests call the app directly through a `TestClient` fixture (`fastapi_test_client`), wired to real `NodeRegistry` and `ModelRegistry` instances. No gRPC or model loading involved.
+
+| Test Case ID | Requirement | Test Suite | Title | Description | Pre-conditions | Test Data | Test Steps | Expected Result |
+|---|---|---|---|---|---|---|---|---|
+| TC-HA-01 | FR-NM-04 | TestGetNodes | Empty registry returns empty list | Verify GET /nodes on an empty registry returns an empty list. | Empty NodeRegistry. | None. | 1. Call `GET /nodes`. | 200, body is []. |
+| TC-HA-02 | FR-NM-04 | TestGetNodes | Populated registry returns nodes | Verify a registered node is returned with its fields over HTTP. | NodeRegistry with one node registered directly via `update_node`. | node_id="node-1", inference_port=50052. | 1. Register node-1. 2. Call `GET /nodes`. | 200, one item with node_id="node-1", status="available", inference_port=50052. |
+| TC-HA-03 | FR-MR-04 | TestGetModels | Empty registry returns empty list | Verify GET /models on an empty registry returns an empty list. | Empty ModelRegistry. | None. | 1. Call `GET /models`. | 200, body is []. |
+| TC-HA-04 | FR-MR-04 | TestGetModels | Populated registry returns models | Verify a registered model is returned with its fields over HTTP. | ModelRegistry with mamba-130m registered directly. | Full valid manifest. | 1. Register manifest. 2. Call `GET /models`. | 200, one item with name="mamba-130m", arch="mamba". |
+| TC-HA-05 | FR-MR-02 | TestPostModels | Valid manifest registers and is retrievable | Verify POST /models with valid YAML registers the model and it appears in a subsequent GET /models. | Empty ModelRegistry. | Full valid manifest YAML. | 1. Call `POST /models`. 2. Call `GET /models`. | POST returns 201 with name="mamba-130m"; GET returns 1 item. |
+| TC-HA-06 | FR-MR-03 | TestPostModels | Missing field returns 400 | Verify a manifest missing a required field returns 400 naming the field. | Empty ModelRegistry. | YAML missing "checkpoint" and other fields. | 1. Call `POST /models`. | 400, detail matches "checkpoint". |
+| TC-HA-07 | FR-MR-03 | TestPostModels | Unsupported arch returns 400 | Verify an unsupported architecture returns 400 naming the field. | Empty ModelRegistry. | arch="rnn". | 1. Call `POST /models`. | 400, detail matches "arch". |
+| TC-HA-08 | FR-MR-01 | TestPostModels | Duplicate name returns 409 | Verify registering the same model name twice returns 409 on the second call. | ModelRegistry with mamba-130m already registered via a prior POST. | Same manifest YAML twice. | 1. POST once. 2. POST again. | Second call returns 409. |
+| TC-HA-09 | FR-MR-03 | TestPostModels | Invalid YAML returns 400 | Verify malformed YAML returns 400 rather than a server error. | Empty ModelRegistry. | manifest_yaml="not: valid: yaml: [structure". | 1. Call `POST /models`. | 400. |
+| TC-HA-10 | FR-MR-03 | TestPostModels | Non-mapping YAML returns 400 | Verify YAML that parses but is not a mapping (e.g. a list) returns 400. | Empty ModelRegistry. | manifest_yaml="- one\n- two\n". | 1. Call `POST /models`. | 400. |
 
 ### Tensor Serialization (`tests/unit/test_tensor_utils.py`)
 
