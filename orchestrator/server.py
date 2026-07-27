@@ -11,6 +11,7 @@ call.
 
 import argparse
 import logging
+import socket
 import threading
 from concurrent import futures
 
@@ -32,6 +33,25 @@ from orchestrator.pipeline import PipelineCallbackServicer, ResultStore
 from orchestrator.service import NodeServiceServicer
 
 logger = logging.getLogger(__name__)
+
+
+def _get_local_ip() -> str:
+    """
+    Return this machine's LAN-facing IP address.
+
+    Opens a UDP socket toward a public address without sending any
+    data; the OS selects the outbound interface, which is reachable
+    by other nodes on the cluster network (unlike a bare hostname,
+    which workers may not be able to resolve).
+
+    Returns
+    -------
+    str
+        The node's IPv4 address as a dotted-quad string.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
 
 
 def run_reaper(registry, interval_s, stop_event):
@@ -64,6 +84,7 @@ def create_server(
     missed_threshold=DEFAULT_MISSED_HEARTBEATS_THRESHOLD,
     reaper_interval_s=DEFAULT_REAPER_INTERVAL_S,
     max_workers=10,
+    callback_host=None,
 ):
     """
     Create and configure the orchestrator gRPC server and HTTP API.
@@ -71,7 +92,9 @@ def create_server(
     Registers both NodeService (heartbeat/registry) and
     PipelineCallbackService (result delivery) on the same gRPC server,
     and builds a FastAPI app wired to the same NodeRegistry and a new
-    ModelRegistry.
+    ModelRegistry. The FastAPI app's POST /infer route sends this same
+    gRPC server's address to workers as the pipeline callback address,
+    since PipelineCallbackService is registered on it.
 
     Parameters
     ----------
@@ -85,6 +108,10 @@ def create_server(
         Seconds between reaper cycles.
     max_workers : int
         Maximum number of gRPC handler threads.
+    callback_host : str or None
+        Hostname or IP workers should use to reach this server's
+        PipelineCallbackService. Defaults to this machine's LAN-facing
+        IP address, auto-detected via ``_get_local_ip()``.
 
     Returns
     -------
@@ -115,7 +142,8 @@ def create_server(
 
     stop_event = threading.Event()
 
-    app = create_app(registry, model_registry)
+    callback_address = f"{callback_host or _get_local_ip()}:{port}"
+    app = create_app(registry, model_registry, result_store, callback_address)
 
     return server, registry, model_registry, stop_event, result_store, app
 
@@ -161,6 +189,12 @@ def main():
         default=DEFAULT_REAPER_INTERVAL_S,
         help=f"Seconds between reaper cycles (default: {DEFAULT_REAPER_INTERVAL_S})",
     )
+    parser.add_argument(
+        "--callback-host",
+        default="",
+        help="Hostname or IP workers use to reach this server's pipeline "
+        "callback (default: auto-detected LAN IP)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -173,6 +207,7 @@ def main():
         heartbeat_interval_s=args.heartbeat_interval,
         missed_threshold=args.missed_threshold,
         reaper_interval_s=args.reaper_interval,
+        callback_host=args.callback_host or None,
     )
 
     server.start()
