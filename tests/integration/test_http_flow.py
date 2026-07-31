@@ -4,15 +4,16 @@ Integration tests for the full inference HTTP flow.
 Spins up two in-process InferenceServiceServicer-backed gRPC servers
 (simulating two worker nodes) and a PipelineCallbackServicer-backed
 gRPC server (simulating the orchestrator's callback endpoint), then
-drives the real Mamba-130M pipeline through the orchestrator's FastAPI
-app end to end: POST /models, then POST /infer. Marked @pytest.mark.slow
-because it downloads and loads the real model, split across two shards.
+drives a real pipeline through the orchestrator's FastAPI app end to
+end: POST /models, then POST /infer. Uses the tiny random-weight
+dummy-mamba-tiny checkpoint (see scripts/make_dummy_manifest.py)
+instead of a full-size model, since this only needs to exercise the
+real dispatch/load/infer plumbing, not model quality.
 """
 
 from concurrent import futures
 
 import grpc
-import pytest
 from fastapi.testclient import TestClient
 
 from inference.service import InferenceServiceServicer
@@ -22,12 +23,12 @@ from orchestrator.worker_client import _CHANNEL_OPTIONS
 from proto.generated import inference_pb2_grpc
 
 MANIFEST_YAML = """
-name: mamba-130m
+name: dummy-mamba-tiny
 arch: mamba
-checkpoint: state-spaces/mamba-130m-hf
-layers: 24
-hidden_dim: 768
-state_dim: 16
+checkpoint: checkpoints/dummy-mamba-tiny
+layers: 4
+hidden_dim: 64
+state_dim: 8
 input_type: text
 tokenizer: EleutherAI/gpt-neox-20b
 """
@@ -76,7 +77,6 @@ def _start_callback_server(result_store):
     return server, port
 
 
-@pytest.mark.slow
 class TestHttpInferenceFlow:
     """
     End-to-end test of POST /models -> POST /infer over a real
@@ -122,7 +122,7 @@ class TestHttpInferenceFlow:
             infer_resp = client.post(
                 "/infer",
                 json={
-                    "model_name": "mamba-130m",
+                    "model_name": "dummy-mamba-tiny",
                     "input": "Hey how are you doing?",
                     "max_new_tokens": 2,
                 },

@@ -14,11 +14,13 @@ import logging
 import socket
 import threading
 from concurrent import futures
+from pathlib import Path
 
 import grpc
 import uvicorn
 
 from proto.generated import inference_pb2_grpc, nodes_pb2_grpc
+from inference.manifest import ManifestError, load_manifest
 from inference.model_registry import ModelRegistry
 from orchestrator.config import (
     DEFAULT_GRPC_PORT,
@@ -31,6 +33,7 @@ from orchestrator.http_api import create_app
 from orchestrator.node_registry import NodeRegistry
 from orchestrator.pipeline import PipelineCallbackServicer, ResultStore
 from orchestrator.service import NodeServiceServicer
+from orchestrator.worker_client import _CHANNEL_OPTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +55,36 @@ def _get_local_ip() -> str:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.connect(("8.8.8.8", 80))
         return s.getsockname()[0]
+
+
+def register_existing_manifests(
+    model_registry: ModelRegistry, manifests_dir: Path
+) -> None:
+    """
+    Auto-register every manifest found in a directory at startup.
+
+    Lets a user drop a checkpoint's manifest into `manifests/` and have
+    it show up already registered, without a manual submission step.
+    Invalid manifests are logged and skipped rather than failing
+    orchestrator startup.
+
+    Parameters
+    ----------
+    model_registry : ModelRegistry
+        The registry to populate.
+    manifests_dir : Path
+        Directory to scan for `*.yaml` manifest files.
+    """
+    if not manifests_dir.is_dir():
+        return
+
+    for path in sorted(manifests_dir.glob("*.yaml")):
+        try:
+            manifest = load_manifest(str(path))
+            model_registry.register(manifest)
+            logger.info("Auto-registered model '%s' from %s", manifest.name, path)
+        except (ManifestError, ValueError) as err:
+            logger.warning("Skipping manifest %s: %s", path, err)
 
 
 def run_reaper(registry, interval_s, stop_event):
@@ -94,7 +127,9 @@ def create_server(
     and builds a FastAPI app wired to the same NodeRegistry and a new
     ModelRegistry. The FastAPI app's POST /infer route sends this same
     gRPC server's address to workers as the pipeline callback address,
-    since PipelineCallbackService is registered on it.
+    since PipelineCallbackService is registered on it. Any manifest
+    already present in the top-level `manifests/` directory is
+    auto-registered into the ModelRegistry before the app is built.
 
     Parameters
     ----------
@@ -125,6 +160,8 @@ def create_server(
         missed_threshold=missed_threshold,
     )
     model_registry = ModelRegistry()
+    manifests_dir = Path(__file__).resolve().parent.parent / "manifests"
+    register_existing_manifests(model_registry, manifests_dir)
     heartbeat_interval_ms = int(heartbeat_interval_s * 1000)
     servicer = NodeServiceServicer(
         registry, heartbeat_interval_ms=heartbeat_interval_ms
@@ -133,7 +170,9 @@ def create_server(
     result_store = ResultStore()
     callback_servicer = PipelineCallbackServicer(result_store)
 
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=max_workers))
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=max_workers), options=_CHANNEL_OPTIONS
+    )
     nodes_pb2_grpc.add_NodeServiceServicer_to_server(servicer, server)
     inference_pb2_grpc.add_PipelineCallbackServiceServicer_to_server(
         callback_servicer, server
@@ -228,7 +267,13 @@ def main():
 
     logger.info("Orchestrator HTTP API starting on port %d", args.http_port)
     try:
-        uvicorn.run(app, host="0.0.0.0", port=args.http_port, log_level="info")
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=args.http_port,
+            log_level="info",
+            access_log=False,
+        )
     finally:
         stop_event.set()
         server.stop(grace=5)

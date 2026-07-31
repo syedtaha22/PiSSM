@@ -30,6 +30,18 @@ from orchestrator.worker_client import PipelineCallbackClient, WorkerClient
 logger = logging.getLogger(__name__)
 
 
+def _format_error(e: Exception) -> str:
+    """
+    Render an exception as a single log line.
+
+    grpc.RpcError's default str() spans several lines (status, details,
+    debug string), which floods the terminal when logged directly.
+    """
+    if isinstance(e, grpc.RpcError) and hasattr(e, "code") and hasattr(e, "details"):
+        return f"{e.code()}: {e.details()}"
+    return str(e)
+
+
 class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
     """
     Handles LoadShard, RunShard, and UnloadShard RPCs on worker nodes.
@@ -114,7 +126,9 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
             )
 
         except Exception as e:
-            logger.error("Failed to load model '%s': %s", request.model_name, e)
+            logger.error(
+                "Failed to load model '%s': %s", request.model_name, _format_error(e)
+            )
             return inference_pb2.LoadShardResponse(
                 success=False,
                 error_message=str(e),
@@ -246,7 +260,9 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
             )
 
         except Exception as e:
-            logger.error("Inference failed on '%s': %s", request.model_name, e)
+            logger.error(
+                "Inference failed on '%s': %s", request.model_name, _format_error(e)
+            )
             return inference_pb2.RunShardResponse(
                 success=False,
                 error_message=str(e),

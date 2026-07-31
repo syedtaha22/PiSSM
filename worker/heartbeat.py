@@ -58,6 +58,7 @@ class HeartbeatClient:
         self._stop_event = threading.Event()
         self._thread = None
         self._channel = None
+        self._consecutive_failures = 0
 
     @property
     def is_running(self) -> bool:
@@ -97,6 +98,21 @@ class HeartbeatClient:
             self._channel = None
         logger.info("Heartbeat client stopped for node '%s'", self._node_id)
 
+    def _reconnect(self) -> nodes_pb2_grpc.NodeServiceStub:
+        """
+        Replace the gRPC channel with a fresh one and return its stub.
+
+        A channel that has gone into TRANSIENT_FAILURE (e.g. the
+        orchestrator restarted) manages its own reconnect backoff
+        internally, which can take a while to escalate. Opening a new
+        channel on every failed attempt forces a genuine connection
+        attempt on our own interval instead of waiting on grpc's
+        internal backoff schedule.
+        """
+        self._channel.close()
+        self._channel = grpc.insecure_channel(self._orchestrator_address)
+        return nodes_pb2_grpc.NodeServiceStub(self._channel)
+
     def _heartbeat_loop(self) -> None:
         """
         Internal loop that sends heartbeats at the configured interval.
@@ -104,6 +120,13 @@ class HeartbeatClient:
         Handles gRPC errors gracefully by logging and retrying on the
         next interval. Never crashes. Respects interval updates from
         the orchestrator's response.
+
+        Repeated failures (e.g. the orchestrator being down) are logged
+        once at the start of the outage and once on recovery, rather
+        than on every retry - a dead orchestrator would otherwise flood
+        the terminal with one multi-line gRPC traceback every interval.
+        The node ID is omitted from these messages since a given
+        process only ever heartbeats for one node.
         """
         stub = nodes_pb2_grpc.NodeServiceStub(self._channel)
 
@@ -132,17 +155,31 @@ class HeartbeatClient:
                         )
                         self._interval_s = new_interval
 
+                if self._consecutive_failures > 0:
+                    logger.info(
+                        "Heartbeat recovered after %d failed attempt(s)",
+                        self._consecutive_failures,
+                    )
+                self._consecutive_failures = 0
+
                 logger.debug(
-                    "Heartbeat sent for node '%s', acknowledged=%s",
-                    self._node_id,
+                    "Heartbeat sent, acknowledged=%s",
                     response.acknowledged,
                 )
 
             except grpc.RpcError as e:
-                logger.warning(
-                    "Heartbeat failed for node '%s': %s",
-                    self._node_id,
-                    e,
-                )
+                self._consecutive_failures += 1
+                if self._consecutive_failures == 1:
+                    logger.warning(
+                        "Heartbeat failed: %s: %s", e.code().name, e.details()
+                    )
+                else:
+                    logger.debug(
+                        "Heartbeat still failing (%d attempts): %s: %s",
+                        self._consecutive_failures,
+                        e.code().name,
+                        e.details(),
+                    )
+                stub = self._reconnect()
 
             self._stop_event.wait(timeout=self._interval_s)

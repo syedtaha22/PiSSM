@@ -9,6 +9,8 @@ ModelStore, PipelineRunner, and AutoTokenizer - no gRPC, model
 download, or real inference involved.
 """
 
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import torch
@@ -207,6 +209,38 @@ def _registered_manifest(model_registry):
     return manifest
 
 
+def _wait_for_terminal_status(fastapi_test_client, model_name, timeout_s=2.0):
+    """
+    Poll GET /models/{name}/status until it reports "ready" or "error".
+
+    The background load thread races the test's own status check; with
+    everything mocked it resolves almost instantly, but this avoids any
+    flakiness from that race rather than asserting immediately.
+
+    Parameters
+    ----------
+    fastapi_test_client : starlette.testclient.TestClient
+        The app's test client.
+    model_name : str
+        The model to poll status for.
+    timeout_s : float
+        Maximum seconds to wait before giving up.
+
+    Returns
+    -------
+    dict
+        The final status response body.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        body = fastapi_test_client.get(f"/models/{model_name}/status").json()
+        if body["status"] in ("ready", "error"):
+            return body
+        if time.monotonic() > deadline:
+            return body
+        time.sleep(0.01)
+
+
 def _fake_pipeline_session():
     """
     Build mocks for a one-node dispatch plan, tokenizer, and pipeline result.
@@ -340,3 +374,266 @@ class TestPostInfer:
         assert mock_plan_dispatch.call_count == 1
         assert fake_runner.load.call_count == 1
         assert fake_runner.run_forward.call_count == 2
+
+
+class TestPostModelLoad:
+    """
+    Tests for POST /models/{name}/load.
+    """
+
+    def test_unknown_model_returns_404(self, fastapi_test_client):
+        """
+        Requesting a load for an unregistered model returns 404.
+        """
+        response = fastapi_test_client.post("/models/nonexistent/load")
+
+        assert response.status_code == 404
+
+    def test_starts_loading_and_reports_ready(
+        self, fastapi_test_client, model_registry
+    ):
+        """
+        A load request kicks off dispatch/load and eventually reports ready.
+        """
+        _registered_manifest(model_registry)
+        fake_plan, fake_tokenizer, fake_runner = _fake_pipeline_session()
+
+        with (
+            patch("orchestrator.http_api.plan_dispatch", return_value=fake_plan),
+            patch("orchestrator.http_api.ModelStore"),
+            patch("orchestrator.http_api.PipelineRunner", return_value=fake_runner),
+            patch(
+                "orchestrator.http_api.AutoTokenizer.from_pretrained",
+                return_value=fake_tokenizer,
+            ),
+        ):
+            response = fastapi_test_client.post("/models/mamba-130m/load")
+            assert response.status_code == 200
+            assert response.json()["status"] in ("loading", "ready")
+
+            status = _wait_for_terminal_status(fastapi_test_client, "mamba-130m")
+
+        assert status["status"] == "ready"
+        assert status["num_nodes"] == 1
+        fake_runner.load.assert_called_once()
+
+    def test_no_available_nodes_reports_error(
+        self, fastapi_test_client, model_registry
+    ):
+        """
+        A dispatch failure surfaces as an error status, not an exception.
+        """
+        _registered_manifest(model_registry)
+
+        with patch(
+            "orchestrator.http_api.plan_dispatch",
+            side_effect=DispatchError("no available nodes in the registry"),
+        ):
+            fastapi_test_client.post("/models/mamba-130m/load")
+            status = _wait_for_terminal_status(fastapi_test_client, "mamba-130m")
+
+        assert status["status"] == "error"
+        assert "no available" in status["error"]
+
+    def test_second_call_does_not_reload(self, fastapi_test_client, model_registry):
+        """
+        Calling load twice while already loading/loaded only dispatches once.
+        """
+        _registered_manifest(model_registry)
+        fake_plan, fake_tokenizer, fake_runner = _fake_pipeline_session()
+
+        with (
+            patch(
+                "orchestrator.http_api.plan_dispatch", return_value=fake_plan
+            ) as mock_plan_dispatch,
+            patch("orchestrator.http_api.ModelStore"),
+            patch("orchestrator.http_api.PipelineRunner", return_value=fake_runner),
+            patch(
+                "orchestrator.http_api.AutoTokenizer.from_pretrained",
+                return_value=fake_tokenizer,
+            ),
+        ):
+            fastapi_test_client.post("/models/mamba-130m/load")
+            fastapi_test_client.get("/models/mamba-130m/status")
+            fastapi_test_client.post("/models/mamba-130m/load")
+
+        assert mock_plan_dispatch.call_count == 1
+        assert fake_runner.load.call_count == 1
+
+
+class TestPostModelRedistribute:
+    """
+    Tests for POST /models/{name}/redistribute.
+    """
+
+    def test_unknown_model_returns_404(self, fastapi_test_client):
+        """
+        Requesting a redistribute for an unregistered model returns 404.
+        """
+        response = fastapi_test_client.post("/models/nonexistent/redistribute")
+
+        assert response.status_code == 404
+
+    def test_never_loaded_returns_400(self, fastapi_test_client, model_registry):
+        """
+        Redistributing a model that was never loaded is a 400, not a 500.
+        """
+        _registered_manifest(model_registry)
+
+        response = fastapi_test_client.post("/models/mamba-130m/redistribute")
+
+        assert response.status_code == 400
+
+    def test_unloads_old_session_and_redispatches(
+        self, fastapi_test_client, model_registry
+    ):
+        """
+        A ready model gets its old shards unloaded and is dispatched again.
+        """
+        _registered_manifest(model_registry)
+        fake_plan, fake_tokenizer, fake_runner = _fake_pipeline_session()
+
+        with (
+            patch(
+                "orchestrator.http_api.plan_dispatch", return_value=fake_plan
+            ) as mock_plan_dispatch,
+            patch("orchestrator.http_api.ModelStore"),
+            patch("orchestrator.http_api.PipelineRunner", return_value=fake_runner),
+            patch(
+                "orchestrator.http_api.AutoTokenizer.from_pretrained",
+                return_value=fake_tokenizer,
+            ),
+        ):
+            fastapi_test_client.post("/models/mamba-130m/load")
+            _wait_for_terminal_status(fastapi_test_client, "mamba-130m")
+
+            response = fastapi_test_client.post("/models/mamba-130m/redistribute")
+            assert response.status_code == 200
+
+            status = _wait_for_terminal_status(fastapi_test_client, "mamba-130m")
+
+        assert status["status"] == "ready"
+        fake_runner.unload.assert_called_once()
+        assert mock_plan_dispatch.call_count == 2
+        assert fake_runner.load.call_count == 2
+
+    def test_still_loading_returns_409(self, fastapi_test_client, model_registry):
+        """
+        Redistributing while a load is already in progress is a 409.
+        """
+        _registered_manifest(model_registry)
+        fake_plan, fake_tokenizer, fake_runner = _fake_pipeline_session()
+
+        load_started = threading.Event()
+        finish_load = threading.Event()
+
+        def slow_load():
+            load_started.set()
+            finish_load.wait(timeout=2.0)
+
+        fake_runner.load.side_effect = slow_load
+
+        with (
+            patch("orchestrator.http_api.plan_dispatch", return_value=fake_plan),
+            patch("orchestrator.http_api.ModelStore"),
+            patch("orchestrator.http_api.PipelineRunner", return_value=fake_runner),
+            patch(
+                "orchestrator.http_api.AutoTokenizer.from_pretrained",
+                return_value=fake_tokenizer,
+            ),
+        ):
+            fastapi_test_client.post("/models/mamba-130m/load")
+            load_started.wait(timeout=2.0)
+
+            response = fastapi_test_client.post("/models/mamba-130m/redistribute")
+
+            finish_load.set()
+
+        assert response.status_code == 409
+
+
+class TestGetModelStatus:
+    """
+    Tests for GET /models/{name}/status.
+    """
+
+    def test_unknown_model_returns_404(self, fastapi_test_client):
+        """
+        Requesting status for an unregistered model returns 404.
+        """
+        response = fastapi_test_client.get("/models/nonexistent/status")
+
+        assert response.status_code == 404
+
+    def test_never_loaded_returns_not_loaded(self, fastapi_test_client, model_registry):
+        """
+        A registered but never-loaded model reports "not_loaded".
+        """
+        _registered_manifest(model_registry)
+
+        response = fastapi_test_client.get("/models/mamba-130m/status")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "not_loaded"
+
+
+class TestGetTopology:
+    """
+    Tests for GET /topology.
+    """
+
+    def test_no_model_loaded_returns_empty(self, fastapi_test_client):
+        """
+        With nothing loaded, topology reports no model and no assignments.
+        """
+        response = fastapi_test_client.get("/topology")
+
+        assert response.status_code == 200
+        assert response.json() == {"model_name": None, "assignments": []}
+
+    def test_reports_assignments_once_dispatched(
+        self, fastapi_test_client, model_registry
+    ):
+        """
+        Once a model has dispatched (even mid-load), topology reports its
+        real per-node layer assignments.
+        """
+        _registered_manifest(model_registry)
+        fake_plan = MagicMock()
+        fake_assignment = MagicMock(
+            node_id="node-0",
+            ip_address="192.168.1.10",
+            layer_start=0,
+            layer_end=24,
+            is_first=True,
+            is_last=True,
+        )
+        fake_plan.assignments = [fake_assignment]
+        fake_tokenizer = MagicMock()
+        fake_runner = MagicMock()
+
+        with (
+            patch("orchestrator.http_api.plan_dispatch", return_value=fake_plan),
+            patch("orchestrator.http_api.ModelStore"),
+            patch("orchestrator.http_api.PipelineRunner", return_value=fake_runner),
+            patch(
+                "orchestrator.http_api.AutoTokenizer.from_pretrained",
+                return_value=fake_tokenizer,
+            ),
+        ):
+            fastapi_test_client.post("/models/mamba-130m/load")
+            response = fastapi_test_client.get("/topology")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["model_name"] == "mamba-130m"
+        assert body["assignments"] == [
+            {
+                "node_id": "node-0",
+                "ip_address": "192.168.1.10",
+                "layer_start": 0,
+                "layer_end": 24,
+                "is_first": True,
+                "is_last": True,
+            }
+        ]

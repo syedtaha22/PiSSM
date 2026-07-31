@@ -2,7 +2,7 @@
 
 Distributed inference for State Space Models on a Raspberry Pi 5 cluster.
 
-PiSSM runs Mamba, S4, and small LLM inference across a cluster of Raspberry Pi 5 units. The user provides a model checkpoint and a YAML manifest. The system handles node discovery, model sharding, pipeline execution, and fault recovery transparently.
+PiSSM runs Mamba, S4, and small LLM inference across a cluster of Raspberry Pi 5 units. The user provides a model checkpoint and a YAML manifest. The system handles node discovery, model sharding, and pipeline execution transparently.
 
 ## Hardware
 
@@ -18,7 +18,7 @@ flowchart TB
 
 
     subgraph UserLayer["User Layer"]
-        TUI["Textual TUI"]:::todo ~~~ WEB["React WebUI"]:::todo
+        TUI["Textual TUI"]:::todo ~~~ WEB["React WebUI"]:::inprogress
     end
 
     UserLayer --> |"HTTP (FastAPI)"| ORCH
@@ -30,7 +30,6 @@ flowchart TB
     ORCH -->|"gRPC"| W1
     ORCH -->|"gRPC"| W2
     ORCH -->|"gRPC"| W3
-
 
     W1["Worker 1 (daemon)"]:::complete
     W2["Worker 2 (daemon)"]:::complete
@@ -47,7 +46,55 @@ Each Pi runs a background daemon that broadcasts presence and hardware state. Th
 - **S4** -- structured state space sequences (primary target)
 - **Transformer LLMs** -- TinyLlama, Phi-2 (secondary, memory-dependent)
 
-## Model Manifest
+## Getting Started
+
+### Prerequisites
+
+- Python 3.11 or later
+- Node.js 18 or later and npm (needed once, to build the WebUI)
+
+### Install
+
+```bash
+git clone https://github.com/syedtaha22/PiSSM.git
+cd PiSSM
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install .
+```
+
+**On Raspberry Pi (aarch64):** `pip install .` may fail with a "No space left on device" or similar error. If it does, install CPU-only torch first:
+
+```bash
+pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
+pip install .
+```
+
+If it still fails, open an issue.
+
+### Run
+
+On the machine that will act as the orchestrator:
+
+```bash
+make run-orchestrator
+```
+
+This builds the WebUI on first run and starts the orchestrator, listening on port 50051 (gRPC, for workers) and port 8080 (HTTP, for the WebUI).
+
+On each worker node (a Raspberry Pi in the cluster, or another terminal on the same machine to try it locally):
+
+```bash
+python3 -m worker.daemon --orchestrator <orchestrator-ip>:50051 --node-id <node-name>
+```
+
+Then open `http://<orchestrator-ip>:8080` in a browser. Any manifest already in `manifests/` is registered automatically at startup -- pick one on the Inference page to load it onto the connected workers and start sending prompts.
+
+### Model Manifest
+
+To use your own model, add a YAML file like this to `manifests/`:
 
 ```yaml
 name: mamba-370m
@@ -60,54 +107,32 @@ input_type: text         # text | timeseries | audio
 tokenizer: tokenizer.json
 ```
 
-## Interfaces
+## Status
 
-**TUI** -- built with Textual. Commands: `listn`, `compile <manifest>`, `run <model> "<input>"`, `status`, `logs`, `vim topology.yaml`.
+Active development. See `docs/SRS.md` for full system specification and `docs/Summer_Sprint.md` for current sprint scope.
 
-**WebUI** -- React frontend served by the orchestrator at `http://<orchestrator-ip>:8080`. Provides a node dashboard, model registry, inference panel, and topology visualizer.
+---
 
-## Stack
+## Development
+
+The sections below are for working on PiSSM itself, not for running it.
+
+### Stack
 
 | Component | Technology |
 |-----------|------------|
 | Inference | PyTorch |
 | Inter-node | gRPC + Protocol Buffers |
 | Orchestrator API | FastAPI |
-| TUI | Textual |
-| WebUI | React |
+| WebUI | React (Next.js) |
 | Config | YAML |
 
-## Getting Started
-
-### Prerequisites
-
-- Python 3.11 or later
-- pip
-
-### Setup
+### Dev Setup
 
 ```bash
-git clone https://github.com/syedtaha22/PiSSM.git
-cd PiSSM
-
-python3 -m venv .venv
-source .venv/bin/activate
-
-# All nodes
-pip install .
-
-# Add dev tools (pytest, black, ruff) for development
+# Add dev tools (pytest, black, ruff) on top of the regular install
 pip install -e ".[dev]"
 ```
-
-**On Raspberry Pi (aarch64):** `pip install .` may fail with a "No space left on device" or similar error. If it does, try installing CPU-only torch first:
-
-```bash
-pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
-pip install .
-```
-
-If it still fails, open an issue.
 
 ### Generate gRPC Stubs
 
@@ -120,7 +145,8 @@ make proto
 ### Run Tests
 
 ```bash
-make test
+make test        # fast unit tests
+make test-slow   # tests that load a real model (slow, RAM-heavy)
 ```
 
 ### Format and Lint
@@ -130,21 +156,26 @@ make lint     # check with ruff + black
 make format   # auto-format with black
 ```
 
-## Status
+### WebUI Dev Commands
 
-Active development. See `docs/SRS.md` for full system specification and `docs/Summer_Sprint.md` for current sprint scope.
+```bash
+make webui-install   # npm install
+make webui-dev       # npm run dev (hot reload, separate from the orchestrator)
+make webui-build     # npm run build (regenerate dashboard/out/ after frontend changes)
+```
 
-## Repo Structure (Tentative)
+### Repo Structure
 
 ```
 piSSM/
-├── orchestrator/       # orchestrator process, dispatch engine, node registry
-├── worker/             # inference daemon, model loaders, shard execution
-├── interfaces/
-│   ├── tui/            # Textual TUI
-│   └── webui/          # React frontend
+├── orchestrator/       # orchestrator process, dispatch engine, node/model registries, HTTP API
+├── worker/             # inference daemon, heartbeat client
+├── inference/          # model loaders, manifest parsing, shard modules
+├── dashboard/          # React (Next.js) WebUI
 ├── proto/              # .proto definitions for gRPC services
-├── models/             # manifest examples and loader implementations
-├── benchmarks/         # benchmark runner and result CSVs
-└── docs/               # SRS, Proposal, Sprint Plan
+├── manifests/          # model manifest examples, auto-registered at orchestrator startup
+├── scripts/            # pipeline runner, profiling, benchmarks, dummy-model generator
+├── benchmarks/         # benchmark result CSVs
+├── tests/              # unit and integration tests
+└── docs/               # SRS, Proposal, Sprint Plan, test catalog
 ```

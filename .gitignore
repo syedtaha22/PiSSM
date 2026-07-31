@@ -8,6 +8,11 @@ build/
 .eggs/
 *.whl
 
+# Node
+node_modules
+.next/
+out/
+
 # Generated protobuf stubs
 proto/generated/*
 
@@ -35,3 +40,6 @@ temp/
 
 # Benchmark results (machine-specific, regenerated per device)
 benchmarks/*.csv
+
+# Generated model checkpoints (regenerate via scripts/make_dummy_manifest.py)
+checkpoints/

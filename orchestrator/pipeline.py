@@ -13,6 +13,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 
+import grpc
 import torch
 from tqdm import tqdm
 
@@ -300,11 +301,25 @@ class PipelineRunner:
     def unload(self) -> None:
         """
         Send UnloadShard to every worker in the plan.
+
+        A worker that's unreachable (e.g. it crashed or was replaced)
+        is logged and skipped rather than aborting the rest - callers
+        such as redistribution rely on every reachable node getting
+        freed even if one node in the old plan is gone.
         """
         for assignment in self._plan.assignments:
             request = inference_pb2.UnloadShardRequest(
                 model_name=self._plan.model_name,
             )
             addr = f"{assignment.ip_address}:{assignment.inference_port}"
-            with WorkerClient(addr) as client:
-                client.unload_shard(request)
+            try:
+                with WorkerClient(addr) as client:
+                    client.unload_shard(request)
+            except grpc.RpcError as err:
+                logger.warning(
+                    "Failed to unload '%s' on %s: %s: %s",
+                    self._plan.model_name,
+                    addr,
+                    err.code().name,
+                    err.details(),
+                )

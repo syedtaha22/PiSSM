@@ -9,6 +9,7 @@ All WorkerClient calls are mocked; no real network I/O occurs.
 import threading
 from unittest.mock import MagicMock, patch
 
+import grpc
 import pytest
 import torch
 
@@ -354,4 +355,22 @@ class TestPipelineRunnerUnload:
         runner.unload()
 
         mock_client = mock_worker_cls.return_value.__enter__.return_value
+        assert mock_client.unload_shard.call_count == 2
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_unload_continues_past_an_unreachable_worker(self, mock_worker_cls):
+        """
+        A dead node (e.g. crashed, or replaced before redistributing)
+        doesn't stop the remaining nodes from being unloaded.
+        """
+        runner, _ = make_runner()
+
+        mock_client = mock_worker_cls.return_value.__enter__.return_value
+        dead_node_error = grpc.RpcError()
+        dead_node_error.code = lambda: grpc.StatusCode.UNAVAILABLE
+        dead_node_error.details = lambda: "Connection refused"
+        mock_client.unload_shard.side_effect = [dead_node_error, None]
+
+        runner.unload()
+
         assert mock_client.unload_shard.call_count == 2
