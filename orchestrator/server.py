@@ -11,7 +11,6 @@ call.
 
 import argparse
 import logging
-import socket
 import threading
 from concurrent import futures
 from pathlib import Path
@@ -34,6 +33,7 @@ from orchestrator.node_registry import NodeRegistry
 from orchestrator.pipeline import PipelineCallbackServicer, ResultStore
 from orchestrator.service import NodeServiceServicer
 from orchestrator.worker_client import _CHANNEL_OPTIONS
+from worker.system_info import get_ip_address
 
 logger = logging.getLogger(__name__)
 
@@ -42,19 +42,20 @@ def _get_local_ip() -> str:
     """
     Return this machine's LAN-facing IP address.
 
-    Opens a UDP socket toward a public address without sending any
-    data; the OS selects the outbound interface, which is reachable
-    by other nodes on the cluster network (unlike a bare hostname,
-    which workers may not be able to resolve).
+    Delegates to worker.system_info.get_ip_address(), which prefers a
+    wired interface over Wi-Fi when both are present. This matters
+    here because the resulting address is what workers use to deliver
+    pipeline results back to this orchestrator - if it resolved to a
+    Wi-Fi address on a machine where Ethernet is the intended cluster
+    link, every result delivery would go over Wi-Fi regardless of how
+    the workers themselves are reached.
 
     Returns
     -------
     str
         The node's IPv4 address as a dotted-quad string.
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        s.connect(("8.8.8.8", 80))
-        return s.getsockname()[0]
+    return get_ip_address()
 
 
 def register_existing_manifests(

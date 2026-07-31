@@ -6,6 +6,9 @@ reasonable value. These functions wrap platform and psutil calls
 to report node identity and hardware state for heartbeat payloads.
 """
 
+import socket
+from unittest.mock import patch
+
 from worker.system_info import (
     get_arch,
     get_available_ram_mb,
@@ -16,6 +19,26 @@ from worker.system_info import (
     get_os_version,
     get_total_ram_mb,
 )
+
+
+def _snicaddr(family, address):
+    """
+    Build a stand-in for psutil's snicaddr namedtuple.
+
+    Parameters
+    ----------
+    family : socket.AddressFamily
+        Address family, e.g. socket.AF_INET.
+    address : str
+        The address string.
+
+    Returns
+    -------
+    object
+        An object with .family and .address attributes, matching the
+        subset of snicaddr's interface get_ip_address actually reads.
+    """
+    return type("snicaddr", (), {"family": family, "address": address})()
 
 
 class TestNodeIdentity:
@@ -42,6 +65,52 @@ class TestNodeIdentity:
         for part in parts:
             assert part.isdigit()
             assert 0 <= int(part) <= 255
+
+
+class TestIpAddressDetection:
+    """
+    Tests for get_ip_address's Ethernet-over-Wi-Fi preference and
+    override support.
+    """
+
+    def test_override_is_returned_as_is(self):
+        """
+        An explicit override skips detection entirely.
+        """
+        assert get_ip_address("10.0.0.5") == "10.0.0.5"
+
+    def test_prefers_ethernet_interface_over_wifi(self):
+        """
+        A wired interface's address wins even if Wi-Fi is also up -
+        this is the actual bug: connecting out to detect the default
+        route often picks Wi-Fi even when Ethernet is the intended
+        cluster link.
+        """
+        fake_interfaces = {
+            "lo": [_snicaddr(socket.AF_INET, "127.0.0.1")],
+            "wlan0": [_snicaddr(socket.AF_INET, "192.168.1.50")],
+            "eth0": [_snicaddr(socket.AF_INET, "192.168.1.99")],
+        }
+        with patch(
+            "worker.system_info.psutil.net_if_addrs", return_value=fake_interfaces
+        ):
+            assert get_ip_address() == "192.168.1.99"
+
+    def test_falls_back_to_default_route_when_no_wired_interface(self):
+        """
+        With no eth*/en* interface present, falls back to the
+        connect-out trick rather than returning nothing.
+        """
+        fake_interfaces = {
+            "lo": [_snicaddr(socket.AF_INET, "127.0.0.1")],
+            "wlan0": [_snicaddr(socket.AF_INET, "192.168.1.50")],
+        }
+        with patch(
+            "worker.system_info.psutil.net_if_addrs", return_value=fake_interfaces
+        ):
+            ip = get_ip_address()
+        assert isinstance(ip, str)
+        assert len(ip.split(".")) == 4
 
 
 class TestMemoryInfo:

@@ -116,6 +116,28 @@ class TestHeartbeatClientLifecycle:
 
         assert now - last_hb < 0.5
 
+    def test_client_reports_explicit_ip_override(self):
+        """
+        Passing ip_address pins the reported address instead of
+        auto-detecting one - the escape hatch for a node where
+        detection picks the wrong interface (e.g. Wi-Fi over Ethernet).
+        """
+        server, address, registry = start_test_server()
+
+        client = HeartbeatClient(
+            orchestrator_address=address,
+            node_id="test-node",
+            interval_s=TEST_INTERVAL_S,
+            inference_port=50052,
+            ip_address="10.0.0.42",
+        )
+        client.start()
+        time.sleep(0.5)
+        client.stop()
+        server.stop(grace=0)
+
+        assert registry.get_node("test-node").ip_address == "10.0.0.42"
+
 
 class TestHeartbeatClientResilience:
     """

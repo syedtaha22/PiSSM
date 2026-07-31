@@ -42,6 +42,11 @@ class HeartbeatClient:
     inference_port : int
         gRPC port on which this node's InferenceService is listening.
         Reported to the orchestrator so it can open WorkerClient connections.
+    ip_address : str or None
+        Explicit IP address to report instead of auto-detecting one.
+        Useful when a node has both Ethernet and Wi-Fi active and
+        auto-detection doesn't pick the interface actually connected
+        to the cluster.
     """
 
     def __init__(
@@ -50,11 +55,13 @@ class HeartbeatClient:
         node_id: str,
         interval_s: float = 2.0,
         inference_port: int = 0,
+        ip_address: str | None = None,
     ) -> None:
         self._orchestrator_address = orchestrator_address
         self._node_id = node_id
         self._interval_s = interval_s
         self._inference_port = inference_port
+        self._ip_address_override = ip_address
         self._stop_event = threading.Event()
         self._thread = None
         self._channel = None
@@ -134,7 +141,7 @@ class HeartbeatClient:
             try:
                 request = nodes_pb2.HeartbeatRequest(
                     node_id=self._node_id,
-                    ip_address=get_ip_address(),
+                    ip_address=get_ip_address(self._ip_address_override),
                     available_ram_mb=get_available_ram_mb(),
                     total_ram_mb=get_total_ram_mb(),
                     cpu_count=get_cpu_count(),

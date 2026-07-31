@@ -90,6 +90,8 @@ On each worker node (a Raspberry Pi in the cluster, or another terminal on the s
 python3 -m worker.daemon --orchestrator <orchestrator-ip>:50051 --node-id <node-name>
 ```
 
+A node's IP address is auto-detected, preferring a wired connection over Wi-Fi. If a node has both active and it still picks the wrong one, pin it explicitly with `--ip <address>`.
+
 Then open `http://<orchestrator-ip>:8080` in a browser. Any manifest already in `manifests/` is registered automatically at startup -- pick one on the Inference page to load it onto the connected workers and start sending prompts.
 
 ### Model Manifest

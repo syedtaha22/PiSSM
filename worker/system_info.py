@@ -12,6 +12,12 @@ import socket
 
 import psutil
 
+# Interface name prefixes used to distinguish wired from wireless links
+# on Linux (both legacy "ethX"/"wlanX" and systemd predictable names
+# like "enp3s0"/"wlp2s0"). Not meaningful on other platforms, but this
+# module is Pi/Linux-focused per its own scope.
+_ETHERNET_PREFIXES = ("eth", "en")
+
 
 def get_node_id():
     """
@@ -28,20 +34,41 @@ def get_node_id():
     return socket.gethostname()
 
 
-def get_ip_address():
+def get_ip_address(override: str | None = None) -> str:
     """
     Return the node's primary IP address.
 
-    Creates a UDP socket and connects to a remote address without
-    sending any data. The OS selects the appropriate source IP for
-    the default route, which works regardless of interface names
-    across Pi and laptop environments.
+    Prefers the address of a wired (Ethernet) interface when one is
+    present, since a machine with both Ethernet and Wi-Fi active will
+    often have its default internet route on Wi-Fi even when Ethernet
+    is the intended link to the rest of the cluster - a plain
+    "connect out and see what IP that picks" trick reports whichever
+    interface reaches the internet, not whichever one is actually on
+    the cluster's LAN. Falls back to that trick only if no wired
+    interface with an IPv4 address is found.
+
+    Parameters
+    ----------
+    override : str or None
+        If given, this address is returned as-is and nothing is
+        auto-detected. Lets a user pin the reported IP explicitly
+        (e.g. via a CLI flag) when detection picks the wrong link.
 
     Returns
     -------
     str
         The node's IPv4 address as a dotted-quad string.
     """
+    if override:
+        return override
+
+    for name, addrs in psutil.net_if_addrs().items():
+        if not name.startswith(_ETHERNET_PREFIXES):
+            continue
+        for addr in addrs:
+            if addr.family == socket.AF_INET:
+                return addr.address
+
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.connect(("8.8.8.8", 80))
         return s.getsockname()[0]
