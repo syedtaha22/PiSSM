@@ -64,6 +64,7 @@ describe('Inference', () => {
       node_latencies_ms: [50],
       peak_memory_mb: [260],
       num_nodes: 1,
+      num_tokens: 20,
     })
 
     const user = userEvent.setup()
@@ -90,6 +91,9 @@ describe('Inference', () => {
     expect(getInferenceLog()).toEqual([
       { timestamp: expect.any(Number), modelName: 'mamba-130m', latencyMs: 120, numNodes: 1 },
     ])
+
+    // 20 tokens in 120ms = 166.7 tok/s.
+    expect(screen.getByText('166.7 tok/s')).toBeInTheDocument()
   })
 
   it('clicking Redistribute re-dispatches across the current nodes', async () => {

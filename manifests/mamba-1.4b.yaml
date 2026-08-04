@@ -1,0 +1,12 @@
+# state-spaces/mamba-1.4b-hf: ~1.4B params in float32 (~5.6GB total).
+# Too large for a single 4GB Pi node; splits across 2 nodes.
+# layers/hidden_dim/state_dim below are taken directly from the real
+# checkpoint's config.json (n_layer, hidden_size, state_size).
+name: mamba-1.4b
+arch: mamba
+checkpoint: state-spaces/mamba-1.4b-hf
+layers: 48
+hidden_dim: 2048
+state_dim: 16
+input_type: text
+tokenizer: EleutherAI/gpt-neox-20b

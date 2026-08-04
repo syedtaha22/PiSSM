@@ -331,6 +331,7 @@ def create_app(
             "node_latencies_ms": list(result.node_latencies_ms) if result else [],
             "peak_memory_mb": list(result.node_peak_memory_mb) if result else [],
             "num_nodes": num_nodes,
+            "num_tokens": submission.max_new_tokens,
         }
 
     @app.get("/nodes")

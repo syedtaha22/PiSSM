@@ -89,6 +89,7 @@ describe('runInference', () => {
       node_latencies_ms: [50],
       peak_memory_mb: [260],
       num_nodes: 1,
+      num_tokens: 20,
     })
 
     const result = await runInference('mamba-130m', 'hi')
@@ -111,6 +112,7 @@ describe('runInference', () => {
       node_latencies_ms: [],
       peak_memory_mb: [],
       num_nodes: 1,
+      num_tokens: 5,
     })
 
     await runInference('mamba-130m', 'hi', 5)

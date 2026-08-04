@@ -31,7 +31,7 @@ export default function Inference() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
-  const [metrics, setMetrics] = useState({ latency: '—', peakMemory: '—', nodes: '—' })
+  const [metrics, setMetrics] = useState({ latency: '-', peakMemory: '-', nodes: '-', tokensPerSec: '-' })
   const [redistributing, setRedistributing] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -163,10 +163,13 @@ export default function Inference() {
         ...prev,
         { id: prev.length + 1, role: 'assistant', content: result.output },
       ])
+      const tokensPerSec =
+        result.latency_ms > 0 ? result.num_tokens / (result.latency_ms / 1000) : 0
       setMetrics({
         latency: `${result.latency_ms.toFixed(0)}ms`,
         peakMemory: `${Math.max(...result.peak_memory_mb, 0)}MB`,
         nodes: String(result.num_nodes),
+        tokensPerSec: `${tokensPerSec.toFixed(1)} tok/s`,
       })
       appendInferenceLog({
         timestamp: Date.now(),
@@ -331,10 +334,14 @@ export default function Inference() {
         </div>
 
         {/* Metrics */}
-        <div className="grid grid-cols-3 gap-4 pt-4 border-t border-border">
+        <div className="grid grid-cols-4 gap-4 pt-4 border-t border-border">
           <div>
             <div className="text-xs text-muted-foreground">Latency</div>
             <div className="text-sm font-mono text-foreground">{metrics.latency}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Tokens/sec</div>
+            <div className="text-sm font-mono text-foreground">{metrics.tokensPerSec}</div>
           </div>
           <div>
             <div className="text-xs text-muted-foreground">Peak Memory</div>

@@ -13,6 +13,11 @@ const PADDING_LEFT = 48
 const PADDING_TOP = 20
 const PADDING_BOTTOM = 28
 
+// Gridlines at 0%, 25%, 50%, 75%, and 100% of maxLatency - two ticks
+// (just 0 and the max) left the middle of the chart unreadable, with
+// no way to tell where a point actually falls between them.
+const TICK_FRACTIONS = [0, 0.25, 0.5, 0.75, 1]
+
 function roundUpToCleanStep(value: number): number {
   if (value <= 0) return 100
   const magnitude = 10 ** Math.floor(Math.log10(value))
@@ -50,8 +55,12 @@ export default function LatencyChart({ entries }: { entries: InferenceLogEntry[]
   })
 
   const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
-  const areaPath = `${linePath} L ${points[points.length - 1].x} ${baselineY} L ${points[0].x} ${baselineY} Z`
   const hitBandWidth = Math.max(plotWidth / entries.length, 12)
+  const ticks = TICK_FRACTIONS.map((f) => ({
+    f,
+    y: baselineY - f * plotHeight,
+    value: Math.round(maxLatency * f),
+  }))
   const hovered = hoveredIndex !== null ? points[hoveredIndex] : null
 
   return (
@@ -63,32 +72,24 @@ export default function LatencyChart({ entries }: { entries: InferenceLogEntry[]
           height="100%"
           preserveAspectRatio="none"
         >
-          <line
-            x1={PADDING_LEFT}
-            x2={VIEWBOX_WIDTH}
-            y1={topY}
-            y2={topY}
-            className="stroke-border"
-            strokeWidth={1}
-            vectorEffect="non-scaling-stroke"
-          />
-          <line
-            x1={PADDING_LEFT}
-            x2={VIEWBOX_WIDTH}
-            y1={baselineY}
-            y2={baselineY}
-            className="stroke-border"
-            strokeWidth={1}
-            vectorEffect="non-scaling-stroke"
-          />
-          <text x={0} y={topY + 4} className="text-[12px] fill-muted-foreground">
-            {maxLatency.toLocaleString()}ms
-          </text>
-          <text x={0} y={baselineY} className="text-[12px] fill-muted-foreground">
-            0ms
-          </text>
+          {ticks.map(({ f, y }) => (
+            <line
+              key={f}
+              x1={PADDING_LEFT}
+              x2={VIEWBOX_WIDTH}
+              y1={y}
+              y2={y}
+              className="stroke-border"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
+          {ticks.map(({ f, y, value }) => (
+            <text key={f} x={0} y={y + 4} className="text-[12px] fill-muted-foreground">
+              {value.toLocaleString()}ms
+            </text>
+          ))}
 
-          <path d={areaPath} className="fill-primary/10" stroke="none" />
           <path
             d={linePath}
             className="stroke-primary"

@@ -32,6 +32,7 @@ export interface InferResult {
   node_latencies_ms: number[]
   peak_memory_mb: number[]
   num_nodes: number
+  num_tokens: number
 }
 
 export type ModelLoadStatus = 'not_loaded' | 'loading' | 'ready' | 'error'

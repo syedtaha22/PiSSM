@@ -331,6 +331,7 @@ class TestPostInfer:
         assert body["node_latencies_ms"] == [5.0]
         assert body["peak_memory_mb"] == [260]
         assert body["num_nodes"] == 1
+        assert body["num_tokens"] == 1
         assert body["latency_ms"] >= 0
         fake_runner.load.assert_called_once()
 

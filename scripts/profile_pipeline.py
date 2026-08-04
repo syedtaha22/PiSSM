@@ -1,11 +1,16 @@
 """
 Pipeline profiling script for PiSSM distributed Mamba inference.
 
-Mirrors profile_single_node.py exactly: same token counts, same warmup
-and run counts, same CSV columns plus num_nodes, node_latencies_ms, and
-communication_overhead_ms. Forward pass and generation are profiled at
-each token count. Generation runs the full circular pipeline once per new
-token (naive; no cross-node SSM state reuse).
+Same token counts and CSV columns as profile_single_node.py (plus
+num_nodes, node_latencies_ms, and communication_overhead_ms), but
+warmup happens once at startup rather than once per configuration -
+a plain CPU forward pass has no per-shape recompilation cost to hide,
+so re-warming for every token count and for both forward and generate
+separately (the latter re-running a full generation loop just to warm
+up) only wastes time without changing what's measured. Forward pass
+and generation are profiled at each token count. Generation runs the
+full circular pipeline once per new token (naive; no cross-node SSM
+state reuse).
 
 Results are appended to benchmarks/pipeline_baseline.csv.
 
@@ -45,6 +50,7 @@ from orchestrator.pipeline import PipelineCallbackServicer, PipelineRunner, Resu
 from orchestrator.service import NodeServiceServicer
 from orchestrator.worker_client import _CHANNEL_OPTIONS
 from proto.generated import inference_pb2_grpc, nodes_pb2_grpc
+from worker.system_info import get_ip_address
 
 DEFAULT_MANIFEST = "manifests/mamba-130m.yaml"
 DEFAULT_RUNS = 10
@@ -77,12 +83,6 @@ CSV_COLUMNS = [
 logger = logging.getLogger(__name__)
 
 
-def _get_local_ip() -> str:
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        s.connect(("8.8.8.8", 80))
-        return s.getsockname()[0]
-
-
 def compute_stats(latencies):
     """
     Compute summary statistics from a list of latency measurements.
@@ -108,7 +108,7 @@ def compute_stats(latencies):
     }
 
 
-def profile_forward_pass(runner, input_ids, warmup, runs):
+def profile_forward_pass(runner, input_ids, runs):
     """
     Profile pipeline forward pass latency.
 
@@ -118,8 +118,6 @@ def profile_forward_pass(runner, input_ids, warmup, runs):
         The loaded pipeline runner.
     input_ids : torch.Tensor
         Input token IDs of shape (1, seq_len).
-    warmup : int
-        Number of warmup passes to discard.
     runs : int
         Number of timed passes to record.
 
@@ -128,9 +126,6 @@ def profile_forward_pass(runner, input_ids, warmup, runs):
     tuple[list[float], list[list[float]], list[float], int]
         (wall_latencies_ms, per_run_node_latencies, comm_overheads_ms, peak_memory_mb)
     """
-    for _ in tqdm(range(warmup), desc="  warmup", leave=False):
-        runner.run_forward(input_ids)
-
     wall_latencies = []
     per_run_node_latencies = []
     comm_overheads = []
@@ -153,7 +148,7 @@ def profile_forward_pass(runner, input_ids, warmup, runs):
     return wall_latencies, per_run_node_latencies, comm_overheads, peak_mem
 
 
-def profile_generate(runner, input_ids, max_new_tokens, warmup, runs):
+def profile_generate(runner, input_ids, max_new_tokens, runs):
     """
     Profile autoregressive generation latency.
 
@@ -168,8 +163,6 @@ def profile_generate(runner, input_ids, max_new_tokens, warmup, runs):
         Input token IDs of shape (1, seq_len).
     max_new_tokens : int
         Tokens to generate per generation call.
-    warmup : int
-        Number of warmup passes to discard.
     runs : int
         Number of timed passes to record.
 
@@ -191,9 +184,6 @@ def profile_generate(runner, input_ids, max_new_tokens, warmup, runs):
             if result.node_peak_memory_mb:
                 peak = max(peak, max(result.node_peak_memory_mb))
         return node_lats_accum, peak
-
-    for _ in tqdm(range(warmup), desc="  warmup", leave=False):
-        _generate(input_ids)
 
     wall_latencies = []
     per_run_node_latencies = []
@@ -351,7 +341,7 @@ def main():
         "--warmup",
         type=int,
         default=DEFAULT_WARMUP,
-        help=f"Warmup passes per configuration (default: {DEFAULT_WARMUP})",
+        help=f"Warmup passes before profiling begins, default: {DEFAULT_WARMUP})",
     )
     parser.add_argument(
         "--nodes",
@@ -383,7 +373,7 @@ def main():
         format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
     )
 
-    callback_host = args.callback_host or _get_local_ip()
+    callback_host = args.callback_host or get_ip_address()
     callback_address = f"{callback_host}:{args.callback_port}"
 
     registry = NodeRegistry(
@@ -448,7 +438,17 @@ def main():
             timeout_s=args.inference_timeout,
         )
         runner.load()
-        logger.info("Shards loaded. Starting profiling...")
+        logger.info("Shards loaded.")
+
+        if args.warmup > 0:
+            logger.info("Warming up with %d forward pass(es)...", args.warmup)
+            warmup_input = torch.randint(
+                0, 50280, (1, TOKEN_COUNTS[0]), dtype=torch.int64
+            )
+            for _ in tqdm(range(args.warmup), desc="warmup", unit="pass"):
+                runner.run_forward(warmup_input)
+
+        logger.info("Starting profiling...")
 
         results = []
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -461,7 +461,7 @@ def main():
             input_ids = torch.randint(0, 50280, (1, token_count), dtype=torch.int64)
 
             fp_wall, fp_node_lats, fp_comm, fp_peak = profile_forward_pass(
-                runner, input_ids, args.warmup, args.runs
+                runner, input_ids, args.runs
             )
             fp_stats = compute_stats(fp_wall)
             mean_node_lats = (
@@ -493,7 +493,7 @@ def main():
                 break
 
             gen_wall, gen_node_lats, gen_comm, gen_peak = profile_generate(
-                runner, input_ids, MAX_NEW_TOKENS, args.warmup, args.runs
+                runner, input_ids, MAX_NEW_TOKENS, args.runs
             )
             gen_stats = compute_stats(gen_wall)
             mean_gen_node_lats = (

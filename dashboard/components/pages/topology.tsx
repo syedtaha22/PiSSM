@@ -407,7 +407,7 @@ export default function Topology() {
         <div className="space-y-2 divide-y divide-border">
           {nodes.map((n) => {
             const seconds = heartbeatSeconds[n.node_id]
-            const heartbeatAgo = seconds !== undefined ? seconds.toFixed(1) : '—'
+            const heartbeatAgo = seconds !== undefined ? seconds.toFixed(1) : '-'
             return (
               <div key={n.node_id} className="py-3 flex items-center justify-between text-sm">
                 <div className="flex items-center gap-2">

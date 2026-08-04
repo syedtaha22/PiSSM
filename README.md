@@ -158,6 +158,14 @@ make lint     # check with ruff + black
 make format   # auto-format with black
 ```
 
+### Versioning
+
+`pyproject.toml`'s `version` follows semver, bumped by hand:
+
+- **Major (x.0.0):** a complete new subsystem or user-facing layer - a new technology stack, new interface, or fundamentally new capability. Dashboard, TUI, a new protocol layer.
+- **Minor (0.x.0):** meaningful additions within an existing subsystem - new endpoints, new model support, new benchmark scripts, significant feature expansion.
+- **Patch (0.0.x):** bug fixes, dependency updates, docs, config, small improvements.
+
 ### WebUI Dev Commands
 
 ```bash
