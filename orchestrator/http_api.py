@@ -21,7 +21,6 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import torch
 import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -311,16 +310,13 @@ def create_app(
         input_ids = session.tokenizer(submission.input, return_tensors="pt").input_ids
 
         start = time.monotonic()
-        result = None
-        for _ in range(submission.max_new_tokens):
-            result = session.runner.run_forward(input_ids)
-            next_token = (
-                result.output_tensor[0, -1, :].argmax().unsqueeze(0).unsqueeze(0)
-            )
-            input_ids = torch.cat([input_ids, next_token], dim=1)
+        result = session.runner.generate(input_ids, submission.max_new_tokens)
         latency_ms = (time.monotonic() - start) * 1000
 
-        output_text = session.tokenizer.decode(input_ids[0], skip_special_tokens=True)
+        output_text = session.tokenizer.decode(
+            result.output_ids[0], skip_special_tokens=True
+        )
+        last_step = result.step_results[-1] if result.step_results else None
 
         with states_lock:
             num_nodes = len(model_states[submission.model_name].plan.assignments)
@@ -328,8 +324,8 @@ def create_app(
         return {
             "output": output_text,
             "latency_ms": latency_ms,
-            "node_latencies_ms": list(result.node_latencies_ms) if result else [],
-            "peak_memory_mb": list(result.node_peak_memory_mb) if result else [],
+            "node_latencies_ms": list(last_step.node_latencies_ms) if last_step else [],
+            "peak_memory_mb": list(last_step.node_peak_memory_mb) if last_step else [],
             "num_nodes": num_nodes,
             "num_tokens": submission.max_new_tokens,
         }

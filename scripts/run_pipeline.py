@@ -23,7 +23,6 @@ import time
 from concurrent import futures
 
 import grpc
-import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
@@ -306,15 +305,12 @@ def main():
         )
 
         with tqdm(total=args.max_new_tokens, unit="tok", dynamic_ncols=True) as pbar:
-            for _ in range(args.max_new_tokens):
-                result = runner.run_forward(input_ids)
-                next_token = (
-                    result.output_tensor[0, -1, :].argmax().unsqueeze(0).unsqueeze(0)
-                )
-                input_ids = torch.cat([input_ids, next_token], dim=1)
-                pbar.update(1)
+            generation_result = runner.generate(input_ids, args.max_new_tokens)
+            pbar.update(args.max_new_tokens)
 
-        output_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
+        output_text = tokenizer.decode(
+            generation_result.output_ids[0], skip_special_tokens=True
+        )
         logger.info("Response: %s", output_text)
 
     finally:

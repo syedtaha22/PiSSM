@@ -259,13 +259,16 @@ def _fake_pipeline_session():
     fake_tokenizer.return_value.input_ids = torch.tensor([[1, 2, 3]])
     fake_tokenizer.decode.return_value = "hello world"
 
-    fake_result = MagicMock()
-    fake_result.output_tensor = torch.zeros(1, 3, 10)
-    fake_result.node_latencies_ms = [5.0]
-    fake_result.node_peak_memory_mb = [260]
+    fake_step_result = MagicMock()
+    fake_step_result.node_latencies_ms = [5.0]
+    fake_step_result.node_peak_memory_mb = [260]
+
+    fake_generation_result = MagicMock()
+    fake_generation_result.output_ids = torch.zeros(1, 4, dtype=torch.int64)
+    fake_generation_result.step_results = [fake_step_result]
 
     fake_runner = MagicMock()
-    fake_runner.run_forward.return_value = fake_result
+    fake_runner.generate.return_value = fake_generation_result
 
     return fake_plan, fake_tokenizer, fake_runner
 
@@ -374,7 +377,7 @@ class TestPostInfer:
         assert mock_runner_cls.call_count == 1
         assert mock_plan_dispatch.call_count == 1
         assert fake_runner.load.call_count == 1
-        assert fake_runner.run_forward.call_count == 2
+        assert fake_runner.generate.call_count == 2
 
 
 class TestPostModelLoad:

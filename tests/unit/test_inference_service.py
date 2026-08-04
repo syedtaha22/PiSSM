@@ -10,9 +10,12 @@ from unittest.mock import MagicMock, patch
 
 import grpc
 import torch
+from transformers import MambaConfig, MambaForCausalLM
 
 from proto.generated import inference_pb2
-from inference.tensor_utils import serialize_tensor
+from inference.loader import ModelHandle
+from inference.shard import MambaShardModule
+from inference.tensor_utils import deserialize_tensor, serialize_tensor
 
 
 def make_load_request(
@@ -427,6 +430,187 @@ class TestRunShard:
         assert response.success is True
         mock_callback_cls.assert_called_once_with("localhost:50060")
         mock_callback_instance.deliver_result.assert_called_once()
+
+
+def make_real_single_shard_handle(model_name="cache-test-model"):
+    """
+    Build a ModelHandle wrapping a real (tiny, random-weight) single
+    Mamba shard covering all layers - for testing RunShard's actual
+    cache lifecycle logic, not just its plumbing around a mock.
+
+    Parameters
+    ----------
+    model_name : str
+        Name to give the handle.
+
+    Returns
+    -------
+    ModelHandle
+        A handle with a real MambaShardModule as its model, cache=None.
+    """
+    config = MambaConfig(
+        vocab_size=32, hidden_size=8, num_hidden_layers=2, state_size=4
+    )
+    model = MambaForCausalLM(config)
+    model.eval()
+    shard = MambaShardModule.from_model(
+        model, layer_start=0, layer_end=2, is_first=True, is_last=True
+    )
+    return ModelHandle(
+        name=model_name,
+        model=shard,
+        tokenizer=None,
+        manifest=None,
+        memory_mb=1,
+        loaded_at=0.0,
+        layer_start=0,
+        layer_end=2,
+        is_first_shard=True,
+        is_last_shard=True,
+        next_worker_address="",
+    )
+
+
+class TestRunShardCache:
+    """
+    Tests for recurrent-state caching in RunShard's pipeline-mode path.
+    Uses a real (tiny) shard directly injected into the servicer's
+    model dict, rather than going through LoadShard, to exercise
+    actual cache behavior rather than mocked plumbing.
+    """
+
+    @patch("inference.service.PipelineCallbackClient")
+    def test_reset_cache_true_builds_a_fresh_cache(self, mock_callback_cls):
+        """
+        A reset_cache=True call builds a new cache on the handle.
+        """
+        from inference.service import InferenceServiceServicer
+
+        servicer = InferenceServiceServicer()
+        handle = make_real_single_shard_handle()
+        servicer._models[handle.name] = handle
+        assert handle.cache is None
+
+        request = make_pipeline_run_request(
+            model_name=handle.name,
+            input_tensor=torch.tensor([[1, 2, 3]], dtype=torch.int64),
+        )
+        request.reset_cache = True
+        response = servicer.RunShard(request, MagicMock())
+
+        assert response.success is True
+        assert handle.cache is not None
+
+    @patch("inference.service.PipelineCallbackClient")
+    def test_reset_cache_false_reuses_existing_cache(self, mock_callback_cls):
+        """
+        A reset_cache=False call reuses the same cache object instead
+        of rebuilding it from scratch.
+        """
+        from inference.service import InferenceServiceServicer
+
+        servicer = InferenceServiceServicer()
+        handle = make_real_single_shard_handle()
+        servicer._models[handle.name] = handle
+
+        first = make_pipeline_run_request(
+            model_name=handle.name,
+            input_tensor=torch.tensor([[1, 2, 3]], dtype=torch.int64),
+        )
+        first.reset_cache = True
+        servicer.RunShard(first, MagicMock())
+        cache_after_first = handle.cache
+        assert cache_after_first is not None
+
+        second = make_pipeline_run_request(
+            model_name=handle.name,
+            input_tensor=torch.tensor([[5]], dtype=torch.int64),
+        )
+        second.reset_cache = False
+        servicer.RunShard(second, MagicMock())
+
+        assert handle.cache is cache_after_first
+
+    @patch("inference.service.PipelineCallbackClient")
+    def test_reset_cache_true_again_rebuilds_cache(self, mock_callback_cls):
+        """
+        A second reset_cache=True call (e.g. a fresh, unrelated
+        generation against the same resident model) discards the old
+        cache and builds a new one, so no state leaks between
+        generations.
+        """
+        from inference.service import InferenceServiceServicer
+
+        servicer = InferenceServiceServicer()
+        handle = make_real_single_shard_handle()
+        servicer._models[handle.name] = handle
+
+        first = make_pipeline_run_request(
+            model_name=handle.name,
+            input_tensor=torch.tensor([[1, 2, 3]], dtype=torch.int64),
+        )
+        first.reset_cache = True
+        servicer.RunShard(first, MagicMock())
+        cache_after_first = handle.cache
+
+        second = make_pipeline_run_request(
+            model_name=handle.name,
+            input_tensor=torch.tensor([[1, 2, 3]], dtype=torch.int64),
+        )
+        second.reset_cache = True
+        servicer.RunShard(second, MagicMock())
+
+        assert handle.cache is not cache_after_first
+
+    def test_cached_decode_matches_full_recompute(self):
+        """
+        Prefill + a cached decode step, driven through the real RunShard
+        RPC handler, produce the same final-position logits as a single
+        RunShard call recomputing the whole sequence with no cache -
+        the actual point of this feature, verified at the service layer
+        rather than just the shard layer.
+        """
+        from inference.service import InferenceServiceServicer
+
+        torch.manual_seed(0)
+        vocab = 32
+        prompt = torch.randint(0, vocab, (1, 3), dtype=torch.int64)
+        next_token = torch.randint(0, vocab, (1, 1), dtype=torch.int64)
+        full_sequence = torch.cat([prompt, next_token], dim=1)
+
+        def run_and_capture(handle, input_tensor, reset_cache):
+            servicer = InferenceServiceServicer()
+            servicer._models[handle.name] = handle
+            request = make_pipeline_run_request(
+                model_name=handle.name, input_tensor=input_tensor
+            )
+            request.reset_cache = reset_cache
+            with patch("inference.service.PipelineCallbackClient") as mock_cls:
+                delivered = []
+                mock_cls.return_value.__enter__.return_value.deliver_result.side_effect = (
+                    delivered.append
+                )
+                servicer.RunShard(request, MagicMock())
+            return deserialize_tensor(
+                delivered[0].output_tensor,
+                list(delivered[0].output_shape),
+                delivered[0].output_dtype,
+            )
+
+        torch.manual_seed(1)
+        reference_handle = make_real_single_shard_handle()
+        reference_output = run_and_capture(
+            reference_handle, full_sequence, reset_cache=True
+        )
+
+        torch.manual_seed(1)
+        cached_handle = make_real_single_shard_handle()
+        run_and_capture(cached_handle, prompt, reset_cache=True)
+        cached_output = run_and_capture(cached_handle, next_token, reset_cache=False)
+
+        assert torch.allclose(
+            reference_output[0, -1, :], cached_output[0, -1, :], atol=1e-4
+        )
 
 
 class TestUnloadShard:

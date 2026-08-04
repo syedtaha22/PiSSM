@@ -177,8 +177,12 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
             pipeline_mode = bool(request.orchestrator_callback_address)
 
             if pipeline_mode:
+                if request.reset_cache or handle.cache is None:
+                    handle.cache = handle.model.new_cache()
                 with torch.no_grad():
-                    output_tensor = handle.model(input_tensor)
+                    output_tensor = handle.model(
+                        input_tensor, cache_params=handle.cache
+                    )
             elif request.generate_mode:
                 with torch.no_grad():
                     output_tensor = handle.model.generate(
@@ -212,6 +216,7 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
                         orchestrator_callback_address=request.orchestrator_callback_address,
                         node_latencies_ms=accumulated_latencies,
                         node_peak_memory_mb=accumulated_memory,
+                        reset_cache=request.reset_cache,
                     )
                     with WorkerClient(handle.next_worker_address) as client:
                         client.run_shard(next_request)

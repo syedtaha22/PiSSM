@@ -9,10 +9,10 @@ so re-warming for every token count and for both forward and generate
 separately (the latter re-running a full generation loop just to warm
 up) only wastes time without changing what's measured. Forward pass
 and generation are profiled at each token count. Generation runs the
-full circular pipeline once per new token (naive; no cross-node SSM
-state reuse).
+full circular pipeline once per new token, reusing each worker's
+recurrent state across steps (reset only on the first token).
 
-Results are appended to benchmarks/pipeline_baseline.csv.
+Results are written to benchmarks/pipeline_baseline.csv.
 
 Usage:
     python scripts/profile_pipeline.py
@@ -152,8 +152,9 @@ def profile_generate(runner, input_ids, max_new_tokens, runs):
     """
     Profile autoregressive generation latency.
 
-    Runs the full pipeline once per new token (naive - no cross-node
-    SSM state reuse). Timing covers the entire generation loop.
+    Runs the full pipeline once per new token, reusing each worker's
+    recurrent state across steps via PipelineRunner.generate(). Timing
+    covers the entire generation loop.
 
     Parameters
     ----------
@@ -173,16 +174,13 @@ def profile_generate(runner, input_ids, max_new_tokens, runs):
     """
 
     def _generate(ids):
-        cur = ids
+        generation_result = runner.generate(ids, max_new_tokens)
         node_lats_accum = []
         peak = 0
-        for _ in range(max_new_tokens):
-            result = runner.run_forward(cur)
-            next_tok = result.output_tensor[0, -1, :].argmax().unsqueeze(0).unsqueeze(0)
-            cur = torch.cat([cur, next_tok], dim=1)
-            node_lats_accum.append(result.node_latencies_ms)
-            if result.node_peak_memory_mb:
-                peak = max(peak, max(result.node_peak_memory_mb))
+        for step_result in generation_result.step_results:
+            node_lats_accum.append(step_result.node_latencies_ms)
+            if step_result.node_peak_memory_mb:
+                peak = max(peak, max(step_result.node_peak_memory_mb))
         return node_lats_accum, peak
 
     wall_latencies = []
@@ -523,13 +521,11 @@ def main():
 
         if results:
             os.makedirs(os.path.dirname(args.output), exist_ok=True)
-            file_exists = os.path.exists(args.output)
-            with open(args.output, "a", newline="") as f:
+            with open(args.output, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
-                if not file_exists:
-                    writer.writeheader()
+                writer.writeheader()
                 writer.writerows(results)
-            logger.info("Results appended to %s", args.output)
+            logger.info("Results written to %s", args.output)
 
     finally:
         stop_event.set()

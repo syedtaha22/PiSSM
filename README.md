@@ -186,6 +186,7 @@ piSSM/
 ├── manifests/          # model manifest examples, auto-registered at orchestrator startup
 ├── scripts/            # pipeline runner, profiling, benchmarks, dummy-model generator
 ├── benchmarks/         # benchmark result CSVs
+├── notebooks/          # comparison notebooks (pipeline vs single-node, optimization runs)
 ├── tests/              # unit and integration tests
 └── docs/               # SRS, Proposal, Sprint Plan, test catalog
 ```
