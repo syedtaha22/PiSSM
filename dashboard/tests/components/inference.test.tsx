@@ -11,12 +11,12 @@ afterEach(() => {
 })
 
 const SAMPLE_MODEL = {
-  name: 'mamba-130m',
+  name: 'dummy-mamba-tiny',
   arch: 'mamba',
-  checkpoint: 'state-spaces/mamba-130m-hf',
-  layers: 24,
-  hidden_dim: 768,
-  state_dim: 16,
+  checkpoint: 'checkpoints/dummy-mamba-tiny',
+  layers: 4,
+  hidden_dim: 64,
+  state_dim: 8,
   input_type: 'text',
   tokenizer: 'EleutherAI/gpt-neox-20b',
 }
@@ -38,7 +38,7 @@ describe('Inference', () => {
     render(<Inference />)
 
     await waitFor(() =>
-      expect(screen.getByRole('option', { name: 'mamba-130m' })).toBeInTheDocument()
+      expect(screen.getByRole('option', { name: 'dummy-mamba-tiny' })).toBeInTheDocument()
     )
     await waitFor(() =>
       expect(screen.getByText(/Loading model onto 1 node/)).toBeInTheDocument()
@@ -58,14 +58,20 @@ describe('Inference', () => {
       error: null,
       num_nodes: 1,
     })
-    vi.spyOn(api, 'runInference').mockResolvedValue({
-      output: 'hello world',
-      latency_ms: 120,
-      node_latencies_ms: [50],
-      peak_memory_mb: [260],
-      num_nodes: 1,
-      num_tokens: 20,
-    })
+    vi.spyOn(api, 'runInferenceStream').mockImplementation(
+      async (_modelName, _input, onToken) => {
+        onToken('hello ')
+        onToken('world')
+        return {
+          output: 'hello world',
+          latency_ms: 120,
+          node_latencies_ms: [50],
+          peak_memory_mb: [260],
+          num_nodes: 1,
+          num_tokens: 20,
+        }
+      }
+    )
 
     const user = userEvent.setup()
     render(<Inference />)
@@ -80,7 +86,11 @@ describe('Inference', () => {
     await user.click(screen.getByRole('button', { name: 'Send' }))
 
     await waitFor(() => expect(screen.getByText('hello world')).toBeInTheDocument())
-    expect(api.runInference).toHaveBeenCalledWith('mamba-130m', 'hi there')
+    expect(api.runInferenceStream).toHaveBeenCalledWith(
+      'dummy-mamba-tiny',
+      'hi there',
+      expect.any(Function)
+    )
 
     // The input re-enables and regains focus once sending finishes,
     // instead of leaving the user having to re-click it each time.
@@ -89,7 +99,13 @@ describe('Inference', () => {
 
     // The completed request's latency is logged for the Dashboard's chart.
     expect(getInferenceLog()).toEqual([
-      { timestamp: expect.any(Number), modelName: 'mamba-130m', latencyMs: 120, numNodes: 1 },
+      {
+        timestamp: expect.any(Number),
+        modelName: 'dummy-mamba-tiny',
+        latencyMs: 120,
+        numNodes: 1,
+        numTokens: 20,
+      },
     ])
 
     // 20 tokens in 120ms = 166.7 tok/s.
@@ -123,7 +139,7 @@ describe('Inference', () => {
 
     await user.click(screen.getByRole('button', { name: /redistribute/i }))
 
-    await waitFor(() => expect(redistributeSpy).toHaveBeenCalledWith('mamba-130m'))
+    await waitFor(() => expect(redistributeSpy).toHaveBeenCalledWith('dummy-mamba-tiny'))
     expect(api.loadModel).toHaveBeenCalledTimes(1)
   })
 

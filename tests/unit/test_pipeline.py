@@ -18,6 +18,7 @@ from inference.tensor_utils import deserialize_tensor, serialize_tensor
 from orchestrator.dispatch import DispatchPlan, ShardAssignment
 from orchestrator.pipeline import (
     GenerationResult,
+    GenerationStep,
     PipelineCallbackServicer,
     PipelineResult,
     PipelineRunner,
@@ -519,6 +520,164 @@ class TestPipelineRunnerGenerate:
             t.join()
 
         assert concurrency["max_active"] == 1
+
+
+# ---------------------------------------------------------------------------
+# PipelineRunner.generate_stream
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineRunnerGenerateStream:
+    """
+    Tests for PipelineRunner.generate_stream(): the generator form of
+    generate() that yields one GenerationStep per token as it's produced,
+    so callers (e.g. a streaming HTTP endpoint) can forward tokens to a
+    client incrementally instead of waiting for the whole generation.
+    """
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_yields_one_step_per_token(self, mock_worker_cls):
+        """
+        Consuming the generator fully yields exactly max_new_tokens
+        GenerationStep objects, each carrying a token_id and the
+        PipelineResult that produced it.
+        """
+        runner, result_store = make_runner()
+        next_tokens = [111, 222, 333]
+
+        def deliver(request):
+            step = (
+                len(
+                    [
+                        c
+                        for c in mock_worker_cls.return_value.__enter__.return_value.run_shard.call_args_list
+                    ]
+                )
+                - 1
+            )
+            result_store.deliver(
+                request.request_id, make_argmax_result(next_tokens[step])
+            )
+            return MagicMock()
+
+        mock_worker_cls.return_value.__enter__.return_value.run_shard.side_effect = (
+            deliver
+        )
+
+        prompt = torch.tensor([[1, 2, 3]], dtype=torch.int64)
+        steps = list(runner.generate_stream(prompt, max_new_tokens=3))
+
+        assert len(steps) == 3
+        assert all(isinstance(s, GenerationStep) for s in steps)
+        assert [s.token_id.item() for s in steps] == next_tokens
+        assert all(isinstance(s.step_result, PipelineResult) for s in steps)
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_first_step_resets_cache_subsequent_do_not(self, mock_worker_cls):
+        """
+        generate_stream() drives the same reset_cache protocol as
+        generate(): reset_cache=True with the full prompt on the first
+        step, reset_cache=False with just the newest token afterward.
+        """
+        runner, result_store = make_runner()
+        requests = []
+        next_tokens = [111, 222]
+
+        def deliver(request):
+            requests.append(request)
+            step = len(requests) - 1
+            result_store.deliver(
+                request.request_id, make_argmax_result(next_tokens[step])
+            )
+            return MagicMock()
+
+        mock_worker_cls.return_value.__enter__.return_value.run_shard.side_effect = (
+            deliver
+        )
+
+        prompt = torch.tensor([[1, 2, 3]], dtype=torch.int64)
+        list(runner.generate_stream(prompt, max_new_tokens=2))
+
+        assert requests[0].reset_cache is True
+        assert requests[1].reset_cache is False
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_lock_held_for_entire_iteration_not_just_first_step(self, mock_worker_cls):
+        """
+        The _generation_lock stays held for as long as the caller keeps
+        iterating, not just until the first token is yielded - an
+        overlapping generate_stream() (or generate()) call against the
+        same runner must still be serialized.
+        """
+        runner, result_store = make_runner()
+        concurrency = {"active": 0, "max_active": 0}
+        state_lock = threading.Lock()
+
+        def deliver(request):
+            with state_lock:
+                concurrency["active"] += 1
+                concurrency["max_active"] = max(
+                    concurrency["max_active"], concurrency["active"]
+                )
+            time.sleep(0.05)
+            result_store.deliver(request.request_id, make_argmax_result(1))
+            with state_lock:
+                concurrency["active"] -= 1
+            return MagicMock()
+
+        mock_worker_cls.return_value.__enter__.return_value.run_shard.side_effect = (
+            deliver
+        )
+
+        prompt = torch.tensor([[1, 2]], dtype=torch.int64)
+
+        def consume():
+            list(runner.generate_stream(prompt, max_new_tokens=2))
+
+        threads = [threading.Thread(target=consume) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert concurrency["max_active"] == 1
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_generate_matches_generate_stream_output(self, mock_worker_cls):
+        """
+        generate() (built on top of generate_stream()) still returns the
+        same output_ids/step_results shape as before the refactor - a
+        regression guard for the internal-sharing change.
+        """
+        runner, result_store = make_runner()
+        next_tokens = [111, 222]
+
+        def deliver(request):
+            step = (
+                len(
+                    [
+                        c
+                        for c in mock_worker_cls.return_value.__enter__.return_value.run_shard.call_args_list
+                    ]
+                )
+                - 1
+            )
+            result_store.deliver(
+                request.request_id, make_argmax_result(next_tokens[step])
+            )
+            return MagicMock()
+
+        mock_worker_cls.return_value.__enter__.return_value.run_shard.side_effect = (
+            deliver
+        )
+
+        prompt = torch.tensor([[1, 2, 3]], dtype=torch.int64)
+        result = runner.generate(prompt, max_new_tokens=2)
+
+        assert torch.equal(
+            result.output_ids, torch.tensor([[1, 2, 3, 111, 222]], dtype=torch.int64)
+        )
+        assert len(result.step_results) == 2
 
 
 # ---------------------------------------------------------------------------

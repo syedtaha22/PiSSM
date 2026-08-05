@@ -7,7 +7,7 @@ import {
   loadModel,
   redistributeModel,
   getModelStatus,
-  runInference,
+  runInferenceStream,
   type ModelSummary,
   type ModelLoadStatus,
 } from '@/lib/api'
@@ -152,17 +152,21 @@ export default function Inference() {
       role: 'user',
       content: input,
     }
+    const assistantId = messages.length + 2
+    const assistantMessage: Message = { id: assistantId, role: 'assistant', content: '' }
 
-    setMessages((prev) => [...prev, userMessage])
+    setMessages((prev) => [...prev, userMessage, assistantMessage])
     setInput('')
     setSending(true)
 
+    function appendToken(token: string) {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + token } : m))
+      )
+    }
+
     try {
-      const result = await runInference(selectedModel, input)
-      setMessages((prev) => [
-        ...prev,
-        { id: prev.length + 1, role: 'assistant', content: result.output },
-      ])
+      const result = await runInferenceStream(selectedModel, input, appendToken)
       const tokensPerSec =
         result.latency_ms > 0 ? result.num_tokens / (result.latency_ms / 1000) : 0
       setMetrics({
@@ -176,13 +180,15 @@ export default function Inference() {
         modelName: selectedModel,
         latencyMs: result.latency_ms,
         numNodes: result.num_nodes,
+        numTokens: result.num_tokens,
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Inference failed'
-      setMessages((prev) => [
-        ...prev,
-        { id: prev.length + 1, role: 'assistant', content: `Error: ${message}` },
-      ])
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId ? { ...m, content: `Error: ${message}` } : m
+        )
+      )
     } finally {
       setSending(false)
     }
@@ -261,30 +267,33 @@ export default function Inference() {
       <div className="flex-1 border-t border-border pt-6 pr-4 mb-6 overflow-y-auto overflow-x-hidden">
         {modelType === 'text' ? (
           <div className="space-y-4">
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-              >
+            {messages.map((msg, i) => {
+              const isStreamingPlaceholder =
+                sending && msg.role === 'assistant' && msg.content === '' && i === messages.length - 1
+              return (
                 <div
-                  className={`max-w-xl px-4 py-2 rounded text-sm break-words whitespace-pre-wrap ${
-                    msg.role === 'user'
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-border text-foreground'
-                  }`}
+                  key={msg.id}
+                  className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                 >
-                  {msg.content}
+                  <div
+                    className={`max-w-xl px-4 py-2 rounded text-sm break-words whitespace-pre-wrap ${
+                      msg.role === 'user'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-border text-foreground'
+                    }`}
+                  >
+                    {isStreamingPlaceholder ? (
+                      <span className="flex items-center gap-2 text-muted-foreground">
+                        <Loader2 size={14} className="animate-spin" />
+                        Generating...
+                      </span>
+                    ) : (
+                      msg.content
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
-            {sending && (
-              <div className="flex justify-start">
-                <div className="px-4 py-2 text-sm text-muted-foreground flex items-center gap-2">
-                  <Loader2 size={14} className="animate-spin" />
-                  Processing...
-                </div>
-              </div>
-            )}
+              )
+            })}
           </div>
         ) : (
           <div className="w-full h-64 border border-border rounded bg-background/50 flex items-center justify-center">

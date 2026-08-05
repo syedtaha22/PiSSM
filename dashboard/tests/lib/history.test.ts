@@ -13,23 +13,37 @@ describe('getInferenceLog', () => {
 
 describe('appendInferenceLog', () => {
   it('persists an entry that getInferenceLog then returns', () => {
-    appendInferenceLog({ timestamp: 1, modelName: 'mamba-130m', latencyMs: 120, numNodes: 1 })
+    appendInferenceLog({ timestamp: 1, modelName: 'dummy-mamba-tiny', latencyMs: 120, numNodes: 1 })
 
     expect(getInferenceLog()).toEqual([
-      { timestamp: 1, modelName: 'mamba-130m', latencyMs: 120, numNodes: 1 },
+      { timestamp: 1, modelName: 'dummy-mamba-tiny', latencyMs: 120, numNodes: 1 },
     ])
   })
 
   it('appends rather than overwriting previous entries', () => {
-    appendInferenceLog({ timestamp: 1, modelName: 'mamba-130m', latencyMs: 120, numNodes: 1 })
-    appendInferenceLog({ timestamp: 2, modelName: 'mamba-130m', latencyMs: 340, numNodes: 1 })
+    appendInferenceLog({ timestamp: 1, modelName: 'dummy-mamba-tiny', latencyMs: 120, numNodes: 1 })
+    appendInferenceLog({ timestamp: 2, modelName: 'dummy-mamba-tiny', latencyMs: 340, numNodes: 1 })
 
     expect(getInferenceLog()).toHaveLength(2)
   })
 
+  it('persists numTokens when provided', () => {
+    appendInferenceLog({
+      timestamp: 1,
+      modelName: 'dummy-mamba-tiny',
+      latencyMs: 120,
+      numNodes: 1,
+      numTokens: 20,
+    })
+
+    expect(getInferenceLog()).toEqual([
+      { timestamp: 1, modelName: 'dummy-mamba-tiny', latencyMs: 120, numNodes: 1, numTokens: 20 },
+    ])
+  })
+
   it('caps the log at 50 entries, dropping the oldest first', () => {
     for (let i = 0; i < 55; i++) {
-      appendInferenceLog({ timestamp: i, modelName: 'mamba-130m', latencyMs: i, numNodes: 1 })
+      appendInferenceLog({ timestamp: i, modelName: 'dummy-mamba-tiny', latencyMs: i, numNodes: 1 })
     }
 
     const log = getInferenceLog()

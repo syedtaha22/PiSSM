@@ -6,6 +6,8 @@ export interface InferenceLogEntry {
   modelName: string
   latencyMs: number
   numNodes: number
+  // Optional: entries logged before this field existed won't have it.
+  numTokens?: number
 }
 
 export function appendInferenceLog(entry: InferenceLogEntry): void {

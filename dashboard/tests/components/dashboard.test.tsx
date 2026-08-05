@@ -60,15 +60,15 @@ describe('Dashboard', () => {
     window.localStorage.setItem(
       'pissm-inference-history',
       JSON.stringify([
-        { timestamp: 1, modelName: 'mamba-130m', latencyMs: 120, numNodes: 1 },
-        { timestamp: 2, modelName: 'mamba-130m', latencyMs: 340, numNodes: 1 },
+        { timestamp: 1, modelName: 'dummy-mamba-tiny', latencyMs: 120, numNodes: 1 },
+        { timestamp: 2, modelName: 'dummy-mamba-tiny', latencyMs: 340, numNodes: 1 },
       ])
     )
 
     render(<Dashboard />)
 
     await waitFor(() =>
-      expect(screen.getByText('Inference Latency (2 prompts)')).toBeInTheDocument()
+      expect(screen.getByText('Inference Metrics (2 prompts)')).toBeInTheDocument()
     )
   })
 })

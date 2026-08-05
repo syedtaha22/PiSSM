@@ -43,13 +43,13 @@ describe('Topology', () => {
   it('shows the real pipeline once a model has dispatched', async () => {
     vi.spyOn(api, 'listNodes').mockResolvedValue([SAMPLE_NODE])
     vi.spyOn(api, 'getTopology').mockResolvedValue({
-      model_name: 'mamba-130m',
+      model_name: 'dummy-mamba-tiny',
       assignments: [
         {
           node_id: 'node-0',
           ip_address: '192.168.1.10',
           layer_start: 0,
-          layer_end: 24,
+          layer_end: 4,
           is_first: true,
           is_last: true,
         },
@@ -59,9 +59,11 @@ describe('Topology', () => {
     render(<Topology />)
 
     await waitFor(() =>
-      expect(screen.getByText('Showing the active pipeline for "mamba-130m".')).toBeInTheDocument()
+      expect(
+        screen.getByText('Showing the active pipeline for "dummy-mamba-tiny".')
+      ).toBeInTheDocument()
     )
-    await waitFor(() => expect(screen.getByText('layers [0, 24)')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('layers [0, 4)')).toBeInTheDocument())
     expect(screen.getByText('first + last')).toBeInTheDocument()
     expect(screen.getByText('Orchestrator')).toBeInTheDocument()
   })
@@ -70,13 +72,13 @@ describe('Topology', () => {
     const newNode = { ...SAMPLE_NODE, node_id: 'node-1', ip_address: '192.168.1.11' }
     vi.spyOn(api, 'listNodes').mockResolvedValue([SAMPLE_NODE, newNode])
     vi.spyOn(api, 'getTopology').mockResolvedValue({
-      model_name: 'mamba-130m',
+      model_name: 'dummy-mamba-tiny',
       assignments: [
         {
           node_id: 'node-0',
           ip_address: '192.168.1.10',
           layer_start: 0,
-          layer_end: 24,
+          layer_end: 4,
           is_first: true,
           is_last: true,
         },

@@ -112,6 +112,72 @@ export async function runInference(
   })
 }
 
+export async function runInferenceStream(
+  modelName: string,
+  input: string,
+  onToken: (token: string) => void,
+  maxNewTokens?: number
+): Promise<InferResult> {
+  const response = await fetch(`${API_BASE_URL}/infer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model_name: modelName,
+      input,
+      stream: true,
+      ...(maxNewTokens !== undefined && { max_new_tokens: maxNewTokens }),
+    }),
+  })
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null)
+    const message = body?.detail ?? `Request to /infer failed with ${response.status}`
+    throw new ApiError(response.status, message)
+  }
+  if (!response.body) {
+    throw new Error('This browser does not support streaming responses')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let finalResult: InferResult | null = null
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    let newlineIndex = buffer.indexOf('\n')
+    while (newlineIndex !== -1) {
+      const line = buffer.slice(0, newlineIndex).trim()
+      buffer = buffer.slice(newlineIndex + 1)
+      newlineIndex = buffer.indexOf('\n')
+      if (!line) continue
+
+      const chunk = JSON.parse(line)
+      if (chunk.done) {
+        if (chunk.error) throw new Error(chunk.error)
+        finalResult = {
+          output: chunk.output,
+          latency_ms: chunk.latency_ms,
+          node_latencies_ms: chunk.node_latencies_ms,
+          peak_memory_mb: chunk.peak_memory_mb,
+          num_nodes: chunk.num_nodes,
+          num_tokens: chunk.num_tokens,
+        }
+      } else {
+        onToken(chunk.token)
+      }
+    }
+  }
+
+  if (!finalResult) {
+    throw new Error('Stream ended without a final result')
+  }
+  return finalResult
+}
+
 export async function loadModel(modelName: string): Promise<ModelStatus> {
   return request<ModelStatus>(`/models/${encodeURIComponent(modelName)}/load`, {
     method: 'POST',

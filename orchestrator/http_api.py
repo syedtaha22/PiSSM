@@ -15,16 +15,19 @@ a model on demand if it hasn't been explicitly preloaded, so the
 endpoint remains usable standalone.
 """
 
+import json
 import logging
 import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+import torch
 import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from transformers import AutoTokenizer
@@ -69,11 +72,17 @@ class InferSubmission(BaseModel):
         Input text prompt.
     max_new_tokens : int
         Number of tokens to generate.
+    stream : bool
+        If true, respond with newline-delimited JSON (one line per
+        generated token, then a final result line) instead of a single
+        buffered JSON object, so the caller can render tokens as
+        they're produced.
     """
 
     model_name: str
     input: str
     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS
+    stream: bool = False
 
 
 @dataclass
@@ -330,6 +339,63 @@ def create_app(
             "num_tokens": submission.max_new_tokens,
         }
 
+    def _run_inference_stream(submission: InferSubmission, session: _InferenceSession):
+        """
+        Generator yielding one NDJSON line per generated token, then a
+        final line with the full result - lets the caller render tokens
+        as they're produced instead of waiting for the whole generation.
+
+        The model must already be resolved and ready (see the /infer
+        route below): unlike _run_inference, this never raises
+        HTTPException, since by the time a generator's first item is
+        requested the response has already committed to a 200 status
+        over HTTP - errors from this point on are reported inline in
+        the stream instead.
+        """
+        input_ids = session.tokenizer(submission.input, return_tensors="pt").input_ids
+
+        start = time.monotonic()
+        output_ids = input_ids
+        last_step = None
+        try:
+            for step in session.runner.generate_stream(
+                input_ids, submission.max_new_tokens
+            ):
+                output_ids = torch.cat([output_ids, step.token_id], dim=1)
+                last_step = step.step_result
+                token_text = session.tokenizer.decode(
+                    step.token_id[0], skip_special_tokens=True
+                )
+                yield json.dumps({"token": token_text, "done": False}) + "\n"
+        except Exception as err:
+            yield json.dumps({"done": True, "error": str(err)}) + "\n"
+            return
+
+        latency_ms = (time.monotonic() - start) * 1000
+        with states_lock:
+            num_nodes = len(model_states[submission.model_name].plan.assignments)
+
+        yield (
+            json.dumps(
+                {
+                    "done": True,
+                    "output": session.tokenizer.decode(
+                        output_ids[0], skip_special_tokens=True
+                    ),
+                    "latency_ms": latency_ms,
+                    "node_latencies_ms": (
+                        list(last_step.node_latencies_ms) if last_step else []
+                    ),
+                    "peak_memory_mb": (
+                        list(last_step.node_peak_memory_mb) if last_step else []
+                    ),
+                    "num_nodes": num_nodes,
+                    "num_tokens": submission.max_new_tokens,
+                }
+            )
+            + "\n"
+        )
+
     @app.get("/nodes")
     def get_nodes() -> list[dict]:
         """
@@ -524,7 +590,7 @@ def create_app(
         }
 
     @app.post("/infer")
-    async def infer(submission: InferSubmission) -> dict:
+    async def infer(submission: InferSubmission):
         """
         Run inference on a registered model.
 
@@ -533,13 +599,33 @@ def create_app(
         for subsequent requests. Runs the blocking pipeline calls in a
         thread pool so the event loop stays free to serve other routes.
 
+        When submission.stream is true, returns a streaming
+        application/x-ndjson response (one line per generated token,
+        then a final result line) instead of a single JSON object - the
+        model-lookup and load-wait steps still happen synchronously
+        here first, so 404/503/400/504 are reported the same way as the
+        non-streaming path rather than silently inside the stream.
+
         Raises
         ------
         HTTPException
             404 if the model is not registered, 503 if no worker nodes
-            are available, 400 for other dispatch errors.
+            are available, 400 for other dispatch errors, 504 if
+            loading doesn't finish in time.
         """
-        return await run_in_threadpool(_run_inference, submission)
+        if not submission.stream:
+            return await run_in_threadpool(_run_inference, submission)
+
+        manifest = model_registry.get(submission.model_name)
+        if manifest is None:
+            raise HTTPException(
+                status_code=404, detail=f"Model '{submission.model_name}' not found"
+            )
+        session = await run_in_threadpool(_get_ready_session, manifest)
+        return StreamingResponse(
+            _run_inference_stream(submission, session),
+            media_type="application/x-ndjson",
+        )
 
     dashboard_dir = Path(__file__).resolve().parent.parent / "dashboard" / "out"
     if dashboard_dir.is_dir():

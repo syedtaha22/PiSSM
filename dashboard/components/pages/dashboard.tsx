@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { Activity, Zap, Database } from 'lucide-react'
 import { listNodes, type NodeSummary } from '@/lib/api'
 import { getInferenceLog, type InferenceLogEntry } from '@/lib/history'
-import LatencyChart from '@/components/latency-chart'
+import MetricsPanel from '@/components/metrics-panel'
 
 const POLL_INTERVAL_MS = 3000
 
@@ -109,7 +109,7 @@ export default function Dashboard() {
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-foreground font-mono text-xs">
-                    {(node.available_ram_mb / 1024).toFixed(1)}GB /{' '}
+                    {((node.total_ram_mb - node.available_ram_mb) / 1024).toFixed(1)}GB /{' '}
                     {(node.total_ram_mb / 1024).toFixed(1)}GB
                   </span>
                   <div className="w-24 h-1 bg-border rounded-full overflow-hidden">
@@ -125,15 +125,8 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Inference Latency - fills whatever vertical space is left */}
-      <div className="flex-1 min-h-0 flex flex-col space-y-4">
-        <h2 className="text-sm font-medium text-foreground shrink-0">
-          Inference Latency ({inferenceLog.length} prompt{inferenceLog.length === 1 ? '' : 's'})
-        </h2>
-        <div className="flex-1 min-h-0">
-          <LatencyChart entries={inferenceLog} />
-        </div>
-      </div>
+      {/* Inference Metrics - fills whatever vertical space is left */}
+      <MetricsPanel entries={inferenceLog} />
     </div>
   )
 }

@@ -63,6 +63,23 @@ class GenerationResult:
     step_results: list
 
 
+@dataclass
+class GenerationStep:
+    """
+    One generated token, produced by PipelineRunner.generate_stream().
+
+    Parameters
+    ----------
+    token_id : torch.Tensor
+        The newly generated token id, shape (1, 1).
+    step_result : PipelineResult
+        The pipeline result that produced this token.
+    """
+
+    token_id: torch.Tensor
+    step_result: PipelineResult
+
+
 class ResultStore:
     """
     Thread-safe slot map for correlating pipeline requests to results.
@@ -309,13 +326,9 @@ class PipelineRunner:
         Run one full autoregressive generation using per-request recurrent
         cache state.
 
-        Sends exactly one RunShard per new token: the first call has
-        reset_cache=True and carries the full prompt (prefill, rebuilds
-        every worker's cache); each subsequent call has reset_cache=False
-        and carries only the single newest token (decode, reuses cache).
-        Holds self._generation_lock for the entire call, so an overlapping
-        generate() against the same resident model is serialized rather
-        than corrupting worker-side cache state.
+        Built on top of generate_stream(), consuming it fully rather than
+        duplicating its reset_cache/lock logic - see that method for the
+        per-step protocol.
 
         Parameters
         ----------
@@ -334,19 +347,56 @@ class PipelineRunner:
         TimeoutError
             If no result arrives within timeout_s for any step.
         """
+        output_ids = input_ids
+        step_results = []
+        for step in self.generate_stream(input_ids, max_new_tokens):
+            output_ids = torch.cat([output_ids, step.token_id], dim=1)
+            step_results.append(step.step_result)
+        return GenerationResult(output_ids=output_ids, step_results=step_results)
+
+    def generate_stream(self, input_ids: torch.Tensor, max_new_tokens: int):
+        """
+        Generator form of generate(): yields one GenerationStep per token
+        as it's produced, instead of returning only after the whole
+        generation completes.
+
+        Lets a caller (e.g. a streaming HTTP endpoint) forward each token
+        to a client incrementally. Sends exactly one RunShard per new
+        token: the first call has reset_cache=True and carries the full
+        prompt (prefill, rebuilds every worker's cache); each subsequent
+        call has reset_cache=False and carries only the single newest
+        token (decode, reuses cache). Holds self._generation_lock for as
+        long as the caller keeps iterating - not just until the first
+        token is yielded - so an overlapping generate()/generate_stream()
+        call against the same resident model is serialized rather than
+        corrupting worker-side cache state.
+
+        Parameters
+        ----------
+        input_ids : torch.Tensor
+            Tokenized prompt of shape (1, prompt_len).
+        max_new_tokens : int
+            Number of tokens to generate.
+
+        Yields
+        ------
+        GenerationStep
+            One per generated token, in generation order.
+
+        Raises
+        ------
+        TimeoutError
+            If no result arrives within timeout_s for any step.
+        """
         with self._generation_lock:
-            output_ids = input_ids
             next_input = input_ids
-            step_results = []
             for step in range(max_new_tokens):
                 result = self._run_shard_step(next_input, reset_cache=(step == 0))
-                step_results.append(result)
                 next_token = (
                     result.output_tensor[0, -1, :].argmax().unsqueeze(0).unsqueeze(0)
                 )
-                output_ids = torch.cat([output_ids, next_token], dim=1)
                 next_input = next_token
-            return GenerationResult(output_ids=output_ids, step_results=step_results)
+                yield GenerationStep(token_id=next_token, step_result=result)
 
     def _run_shard_step(
         self, input_tensor: torch.Tensor, reset_cache: bool

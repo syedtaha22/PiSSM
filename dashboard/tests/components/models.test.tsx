@@ -4,12 +4,12 @@ import Models from '@/components/pages/models'
 import * as api from '@/lib/api'
 
 const SAMPLE_MODEL = {
-  name: 'mamba-130m',
+  name: 'dummy-mamba-tiny',
   arch: 'mamba',
-  checkpoint: 'state-spaces/mamba-130m-hf',
-  layers: 24,
-  hidden_dim: 768,
-  state_dim: 16,
+  checkpoint: 'checkpoints/dummy-mamba-tiny',
+  layers: 4,
+  hidden_dim: 64,
+  state_dim: 8,
   input_type: 'text',
   tokenizer: 'EleutherAI/gpt-neox-20b',
 }
@@ -21,7 +21,7 @@ describe('Models', () => {
     render(<Models />)
 
     expect(screen.getByText('Models')).toBeInTheDocument()
-    await waitFor(() => expect(screen.getByText('mamba-130m')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('dummy-mamba-tiny')).toBeInTheDocument())
   })
 
   it('shows an error message when listModels() fails', async () => {
