@@ -116,6 +116,28 @@ class TestHeartbeatClientLifecycle:
 
         assert now - last_hb < 0.5
 
+    def test_client_reports_explicit_ip_override(self):
+        """
+        Passing ip_address pins the reported address instead of
+        auto-detecting one - the escape hatch for a node where
+        detection picks the wrong interface (e.g. Wi-Fi over Ethernet).
+        """
+        server, address, registry = start_test_server()
+
+        client = HeartbeatClient(
+            orchestrator_address=address,
+            node_id="test-node",
+            interval_s=TEST_INTERVAL_S,
+            inference_port=50052,
+            ip_address="10.0.0.42",
+        )
+        client.start()
+        time.sleep(0.5)
+        client.stop()
+        server.stop(grace=0)
+
+        assert registry.get_node("test-node").ip_address == "10.0.0.42"
+
 
 class TestHeartbeatClientResilience:
     """
@@ -137,3 +159,40 @@ class TestHeartbeatClientResilience:
         client.stop()
 
         assert client.is_running is False
+
+    def test_client_reconnects_after_orchestrator_restarts(self):
+        """
+        After the orchestrator process goes away and a new one comes up
+        on the same address, the client resumes heartbeating on its own
+        - the user should never need to restart the worker too.
+        """
+        server, address, registry = start_test_server()
+        port = int(address.split(":")[1])
+
+        client = HeartbeatClient(
+            orchestrator_address=address,
+            node_id="test-node",
+            interval_s=TEST_INTERVAL_S,
+            inference_port=50052,
+        )
+        client.start()
+        time.sleep(0.5)
+        assert registry.get_node("test-node") is not None
+
+        server.stop(grace=0)
+        time.sleep(0.5)
+
+        new_registry = NodeRegistry()
+        new_server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+        servicer = NodeServiceServicer(
+            new_registry, heartbeat_interval_ms=TEST_INTERVAL_MS
+        )
+        nodes_pb2_grpc.add_NodeServiceServicer_to_server(servicer, new_server)
+        new_server.add_insecure_port(f"[::]:{port}")
+        new_server.start()
+
+        time.sleep(0.8)
+        client.stop()
+        new_server.stop(grace=0)
+
+        assert new_registry.get_node("test-node") is not None

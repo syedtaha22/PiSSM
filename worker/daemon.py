@@ -57,6 +57,12 @@ def main():
         default=DEFAULT_INFERENCE_PORT,
         help=f"gRPC port for inference service (default: {DEFAULT_INFERENCE_PORT})",
     )
+    parser.add_argument(
+        "--ip",
+        default=None,
+        help="IP address to report to the orchestrator (default: "
+        "auto-detected, preferring a wired interface over Wi-Fi)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -71,6 +77,7 @@ def main():
         node_id=node_id,
         interval_s=args.heartbeat_interval,
         inference_port=args.inference_port,
+        ip_address=args.ip,
     )
 
     inference_servicer = InferenceServiceServicer()

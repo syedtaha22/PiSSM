@@ -7,13 +7,18 @@ All WorkerClient calls are mocked; no real network I/O occurs.
 """
 
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
+import grpc
 import pytest
 import torch
 
+from inference.tensor_utils import deserialize_tensor, serialize_tensor
 from orchestrator.dispatch import DispatchPlan, ShardAssignment
 from orchestrator.pipeline import (
+    GenerationResult,
+    GenerationStep,
     PipelineCallbackServicer,
     PipelineResult,
     PipelineRunner,
@@ -151,7 +156,6 @@ class TestPipelineCallbackServicer:
         """
         DeliverResult deserializes the tensor and delivers to ResultStore.
         """
-        from inference.tensor_utils import serialize_tensor
 
         store = ResultStore()
         store.create_slot("req-42")
@@ -336,6 +340,347 @@ class TestPipelineRunnerRunForward:
 
 
 # ---------------------------------------------------------------------------
+# PipelineRunner.generate
+# ---------------------------------------------------------------------------
+
+
+def make_argmax_result(next_token_id, vocab=50280, seq_len=1):
+    """
+    Build a PipelineResult whose output_tensor argmaxes to next_token_id
+    at its last position, for driving mocked generate() steps.
+
+    Parameters
+    ----------
+    next_token_id : int
+        The token id that should win the argmax at the last position.
+    vocab : int
+        Vocabulary size for the fake logits tensor.
+    seq_len : int
+        Sequence length of the fake logits tensor.
+
+    Returns
+    -------
+    PipelineResult
+        A result with node_latencies_ms=[5.0], node_peak_memory_mb=[200].
+    """
+    logits = torch.full((1, seq_len, vocab), -1.0)
+    logits[0, -1, next_token_id] = 10.0
+    return PipelineResult(
+        output_tensor=logits,
+        node_latencies_ms=[5.0],
+        node_peak_memory_mb=[200],
+    )
+
+
+class TestPipelineRunnerGenerate:
+    """
+    Tests for PipelineRunner.generate(): cached autoregressive decoding
+    that sends reset_cache=True with the full prompt on the first step,
+    then reset_cache=False with only the newest token on every
+    subsequent step.
+    """
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_first_step_resets_cache_and_sends_full_prompt(self, mock_worker_cls):
+        """
+        Step 1's RunShardRequest has reset_cache=True and carries the
+        entire prompt, not just the newest token.
+        """
+        runner, result_store = make_runner()
+        requests = []
+        next_tokens = [111, 222, 333]
+
+        def deliver(request):
+            requests.append(request)
+            step = len(requests) - 1
+            result_store.deliver(
+                request.request_id, make_argmax_result(next_tokens[step])
+            )
+            return MagicMock()
+
+        mock_worker_cls.return_value.__enter__.return_value.run_shard.side_effect = (
+            deliver
+        )
+
+        prompt = torch.tensor([[1, 2, 3]], dtype=torch.int64)
+        runner.generate(prompt, max_new_tokens=3)
+
+        assert requests[0].reset_cache is True
+        first_input = deserialize_tensor(
+            requests[0].input_tensor,
+            list(requests[0].input_shape),
+            requests[0].input_dtype,
+        )
+        assert torch.equal(first_input, prompt)
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_subsequent_steps_reuse_cache_and_send_only_newest_token(
+        self, mock_worker_cls
+    ):
+        """
+        Steps after the first have reset_cache=False and carry only the
+        single newest token, not the growing sequence.
+        """
+        runner, result_store = make_runner()
+        requests = []
+        next_tokens = [111, 222, 333]
+
+        def deliver(request):
+            requests.append(request)
+            step = len(requests) - 1
+            result_store.deliver(
+                request.request_id, make_argmax_result(next_tokens[step])
+            )
+            return MagicMock()
+
+        mock_worker_cls.return_value.__enter__.return_value.run_shard.side_effect = (
+            deliver
+        )
+
+        prompt = torch.tensor([[1, 2, 3]], dtype=torch.int64)
+        runner.generate(prompt, max_new_tokens=3)
+
+        for step, expected_token in enumerate(next_tokens[:-1], start=1):
+            assert requests[step].reset_cache is False
+            step_input = deserialize_tensor(
+                requests[step].input_tensor,
+                list(requests[step].input_shape),
+                requests[step].input_dtype,
+            )
+            assert step_input.shape == (1, 1)
+            assert step_input.item() == expected_token
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_returns_output_ids_and_one_step_result_per_token(self, mock_worker_cls):
+        """
+        generate() returns a GenerationResult whose output_ids concatenates
+        the prompt with every generated token, and whose step_results has
+        exactly one PipelineResult per generated token.
+        """
+        runner, result_store = make_runner()
+        next_tokens = [111, 222]
+
+        def deliver(request):
+            step = deliver.calls
+            deliver.calls += 1
+            result_store.deliver(
+                request.request_id, make_argmax_result(next_tokens[step])
+            )
+            return MagicMock()
+
+        deliver.calls = 0
+        mock_worker_cls.return_value.__enter__.return_value.run_shard.side_effect = (
+            deliver
+        )
+
+        prompt = torch.tensor([[1, 2, 3]], dtype=torch.int64)
+        result = runner.generate(prompt, max_new_tokens=2)
+
+        assert isinstance(result, GenerationResult)
+        assert torch.equal(
+            result.output_ids, torch.tensor([[1, 2, 3, 111, 222]], dtype=torch.int64)
+        )
+        assert len(result.step_results) == 2
+        assert all(isinstance(r, PipelineResult) for r in result.step_results)
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_concurrent_generate_calls_are_serialized(self, mock_worker_cls):
+        """
+        Two overlapping generate() calls against the same runner never
+        run concurrently - the lock must hold for the entire call, since
+        interleaving would corrupt worker-side cache state.
+        """
+        runner, result_store = make_runner()
+        concurrency = {"active": 0, "max_active": 0}
+        state_lock = threading.Lock()
+
+        def deliver(request):
+            with state_lock:
+                concurrency["active"] += 1
+                concurrency["max_active"] = max(
+                    concurrency["max_active"], concurrency["active"]
+                )
+            time.sleep(0.05)
+            result_store.deliver(request.request_id, make_argmax_result(1))
+            with state_lock:
+                concurrency["active"] -= 1
+            return MagicMock()
+
+        mock_worker_cls.return_value.__enter__.return_value.run_shard.side_effect = (
+            deliver
+        )
+
+        prompt = torch.tensor([[1, 2]], dtype=torch.int64)
+        threads = [
+            threading.Thread(target=runner.generate, args=(prompt, 2)) for _ in range(2)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert concurrency["max_active"] == 1
+
+
+# ---------------------------------------------------------------------------
+# PipelineRunner.generate_stream
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineRunnerGenerateStream:
+    """
+    Tests for PipelineRunner.generate_stream(): the generator form of
+    generate() that yields one GenerationStep per token as it's produced,
+    so callers (e.g. a streaming HTTP endpoint) can forward tokens to a
+    client incrementally instead of waiting for the whole generation.
+    """
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_yields_one_step_per_token(self, mock_worker_cls):
+        """
+        Consuming the generator fully yields exactly max_new_tokens
+        GenerationStep objects, each carrying a token_id and the
+        PipelineResult that produced it.
+        """
+        runner, result_store = make_runner()
+        next_tokens = [111, 222, 333]
+
+        def deliver(request):
+            step = (
+                len(
+                    [
+                        c
+                        for c in mock_worker_cls.return_value.__enter__.return_value.run_shard.call_args_list
+                    ]
+                )
+                - 1
+            )
+            result_store.deliver(
+                request.request_id, make_argmax_result(next_tokens[step])
+            )
+            return MagicMock()
+
+        mock_worker_cls.return_value.__enter__.return_value.run_shard.side_effect = (
+            deliver
+        )
+
+        prompt = torch.tensor([[1, 2, 3]], dtype=torch.int64)
+        steps = list(runner.generate_stream(prompt, max_new_tokens=3))
+
+        assert len(steps) == 3
+        assert all(isinstance(s, GenerationStep) for s in steps)
+        assert [s.token_id.item() for s in steps] == next_tokens
+        assert all(isinstance(s.step_result, PipelineResult) for s in steps)
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_first_step_resets_cache_subsequent_do_not(self, mock_worker_cls):
+        """
+        generate_stream() drives the same reset_cache protocol as
+        generate(): reset_cache=True with the full prompt on the first
+        step, reset_cache=False with just the newest token afterward.
+        """
+        runner, result_store = make_runner()
+        requests = []
+        next_tokens = [111, 222]
+
+        def deliver(request):
+            requests.append(request)
+            step = len(requests) - 1
+            result_store.deliver(
+                request.request_id, make_argmax_result(next_tokens[step])
+            )
+            return MagicMock()
+
+        mock_worker_cls.return_value.__enter__.return_value.run_shard.side_effect = (
+            deliver
+        )
+
+        prompt = torch.tensor([[1, 2, 3]], dtype=torch.int64)
+        list(runner.generate_stream(prompt, max_new_tokens=2))
+
+        assert requests[0].reset_cache is True
+        assert requests[1].reset_cache is False
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_lock_held_for_entire_iteration_not_just_first_step(self, mock_worker_cls):
+        """
+        The _generation_lock stays held for as long as the caller keeps
+        iterating, not just until the first token is yielded - an
+        overlapping generate_stream() (or generate()) call against the
+        same runner must still be serialized.
+        """
+        runner, result_store = make_runner()
+        concurrency = {"active": 0, "max_active": 0}
+        state_lock = threading.Lock()
+
+        def deliver(request):
+            with state_lock:
+                concurrency["active"] += 1
+                concurrency["max_active"] = max(
+                    concurrency["max_active"], concurrency["active"]
+                )
+            time.sleep(0.05)
+            result_store.deliver(request.request_id, make_argmax_result(1))
+            with state_lock:
+                concurrency["active"] -= 1
+            return MagicMock()
+
+        mock_worker_cls.return_value.__enter__.return_value.run_shard.side_effect = (
+            deliver
+        )
+
+        prompt = torch.tensor([[1, 2]], dtype=torch.int64)
+
+        def consume():
+            list(runner.generate_stream(prompt, max_new_tokens=2))
+
+        threads = [threading.Thread(target=consume) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert concurrency["max_active"] == 1
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_generate_matches_generate_stream_output(self, mock_worker_cls):
+        """
+        generate() (built on top of generate_stream()) still returns the
+        same output_ids/step_results shape as before the refactor - a
+        regression guard for the internal-sharing change.
+        """
+        runner, result_store = make_runner()
+        next_tokens = [111, 222]
+
+        def deliver(request):
+            step = (
+                len(
+                    [
+                        c
+                        for c in mock_worker_cls.return_value.__enter__.return_value.run_shard.call_args_list
+                    ]
+                )
+                - 1
+            )
+            result_store.deliver(
+                request.request_id, make_argmax_result(next_tokens[step])
+            )
+            return MagicMock()
+
+        mock_worker_cls.return_value.__enter__.return_value.run_shard.side_effect = (
+            deliver
+        )
+
+        prompt = torch.tensor([[1, 2, 3]], dtype=torch.int64)
+        result = runner.generate(prompt, max_new_tokens=2)
+
+        assert torch.equal(
+            result.output_ids, torch.tensor([[1, 2, 3, 111, 222]], dtype=torch.int64)
+        )
+        assert len(result.step_results) == 2
+
+
+# ---------------------------------------------------------------------------
 # PipelineRunner.unload
 # ---------------------------------------------------------------------------
 
@@ -354,4 +699,22 @@ class TestPipelineRunnerUnload:
         runner.unload()
 
         mock_client = mock_worker_cls.return_value.__enter__.return_value
+        assert mock_client.unload_shard.call_count == 2
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_unload_continues_past_an_unreachable_worker(self, mock_worker_cls):
+        """
+        A dead node (e.g. crashed, or replaced before redistributing)
+        doesn't stop the remaining nodes from being unloaded.
+        """
+        runner, _ = make_runner()
+
+        mock_client = mock_worker_cls.return_value.__enter__.return_value
+        dead_node_error = grpc.RpcError()
+        dead_node_error.code = lambda: grpc.StatusCode.UNAVAILABLE
+        dead_node_error.details = lambda: "Connection refused"
+        mock_client.unload_shard.side_effect = [dead_node_error, None]
+
+        runner.unload()
+
         assert mock_client.unload_shard.call_count == 2

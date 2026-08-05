@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pissm"
-version = "0.3.0"
+version = "1.1.0"
 description = "Distributed SSM inference on Raspberry Pi cluster"
 requires-python = ">=3.11"
 dependencies = [
@@ -16,6 +16,9 @@ dependencies = [
     "transformers>=4.39.0",
     "pyyaml>=6.0",
     "tqdm>=4.66.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
+    "httpx2>=2.0.0",
 ]
 
 [project.optional-dependencies]

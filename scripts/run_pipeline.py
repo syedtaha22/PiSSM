@@ -18,13 +18,11 @@ Workers must be started pointing at --port (default 50051):
 import argparse
 import logging
 import signal
-import socket
 import threading
 import time
 from concurrent import futures
 
 import grpc
-import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
@@ -42,6 +40,7 @@ from orchestrator.pipeline import PipelineCallbackServicer, PipelineRunner, Resu
 from orchestrator.service import NodeServiceServicer
 from orchestrator.worker_client import _CHANNEL_OPTIONS
 from proto.generated import inference_pb2_grpc, nodes_pb2_grpc
+from worker.system_info import get_ip_address
 
 DEFAULT_MANIFEST = "manifests/mamba-130m.yaml"
 DEFAULT_MAX_NEW_TOKENS = 50
@@ -50,12 +49,6 @@ DEFAULT_INFERENCE_TIMEOUT_S = 120.0
 DEFAULT_CALLBACK_PORT = 50060
 
 logger = logging.getLogger(__name__)
-
-
-def _get_local_ip() -> str:
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        s.connect(("8.8.8.8", 80))
-        return s.getsockname()[0]
 
 
 def start_node_server(registry, port, heartbeat_interval_s, missed_threshold):
@@ -224,7 +217,7 @@ def main():
         format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
     )
 
-    callback_host = args.callback_host or _get_local_ip()
+    callback_host = args.callback_host or get_ip_address()
     callback_address = f"{callback_host}:{args.callback_port}"
 
     registry = NodeRegistry(
@@ -312,15 +305,12 @@ def main():
         )
 
         with tqdm(total=args.max_new_tokens, unit="tok", dynamic_ncols=True) as pbar:
-            for _ in range(args.max_new_tokens):
-                result = runner.run_forward(input_ids)
-                next_token = (
-                    result.output_tensor[0, -1, :].argmax().unsqueeze(0).unsqueeze(0)
-                )
-                input_ids = torch.cat([input_ids, next_token], dim=1)
-                pbar.update(1)
+            generation_result = runner.generate(input_ids, args.max_new_tokens)
+            pbar.update(args.max_new_tokens)
 
-        output_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
+        output_text = tokenizer.decode(
+            generation_result.output_ids[0], skip_special_tokens=True
+        )
         logger.info("Response: %s", output_text)
 
     finally:

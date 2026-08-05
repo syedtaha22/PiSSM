@@ -12,6 +12,7 @@ import json
 
 import torch
 import torch.nn as nn
+from transformers.cache_utils import Cache, DynamicCache
 
 
 class MambaShardModule(nn.Module):
@@ -36,6 +37,14 @@ class MambaShardModule(nn.Module):
         Final layer norm. Required when is_last is True.
     lm_head : nn.Module or None
         Language model head projection. Required when is_last is True.
+    config : transformers.MambaConfig or None
+        The *full* (un-sliced) model's config - not this shard's own
+        layer count. Needed to size a correctly-shaped recurrent-state
+        cache via new_cache(): each MambaBlock retains its original,
+        global layer_idx after slicing, and Cache.layers[layer_idx]
+        indexes positionally, so a cache sized to this shard's own
+        (smaller) layer count would raise IndexError the moment a
+        non-zero-based layer_idx is used.
     """
 
     def __init__(
@@ -46,10 +55,12 @@ class MambaShardModule(nn.Module):
         embeddings: nn.Module | None = None,
         norm_f: nn.Module | None = None,
         lm_head: nn.Module | None = None,
+        config=None,
     ) -> None:
         super().__init__()
         self.is_first = is_first
         self.is_last = is_last
+        self.config = config
         if is_first:
             if embeddings is None:
                 raise ValueError("embeddings required when is_first=True")
@@ -61,7 +72,9 @@ class MambaShardModule(nn.Module):
             self.norm_f = norm_f
             self.lm_head = lm_head
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, cache_params: Cache | None = None
+    ) -> torch.Tensor:
         """
         Run the shard forward pass.
 
@@ -69,6 +82,12 @@ class MambaShardModule(nn.Module):
         ----------
         x : torch.Tensor
             Token IDs when is_first is True, hidden states otherwise.
+            The full sequence for a prefill call, or just the single
+            newest token/timestep for a cached decode call.
+        cache_params : transformers.cache_utils.Cache or None
+            Recurrent state (conv + SSM state per layer) carried across
+            calls for incremental decoding. None runs a stateless full
+            pass, same as before this feature existed.
 
         Returns
         -------
@@ -78,11 +97,26 @@ class MambaShardModule(nn.Module):
         if self.is_first:
             x = self.embeddings(x)
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, cache_params=cache_params)
         if self.is_last:
             x = self.norm_f(x)
             x = self.lm_head(x)
         return x
+
+    def new_cache(self) -> Cache:
+        """
+        Build a fresh recurrent-state cache sized for this shard.
+
+        Always sized from the full model's config
+        (self.config.num_hidden_layers), never from this shard's own
+        (smaller) layer count - see the class docstring for why.
+
+        Returns
+        -------
+        transformers.cache_utils.Cache
+            An empty cache ready for a prefill call.
+        """
+        return DynamicCache(config=self.config)
 
     @classmethod
     def from_model(
@@ -118,7 +152,9 @@ class MambaShardModule(nn.Module):
         embeddings = model.backbone.embeddings if is_first else None
         norm_f = model.backbone.norm_f if is_last else None
         lm_head = model.lm_head if is_last else None
-        return cls(layers, is_first, is_last, embeddings, norm_f, lm_head)
+        return cls(
+            layers, is_first, is_last, embeddings, norm_f, lm_head, config=model.config
+        )
 
     @classmethod
     def from_bytes(

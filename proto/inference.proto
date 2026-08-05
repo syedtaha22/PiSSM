@@ -164,6 +164,18 @@ message RunShardRequest {
   // Accumulated per-node peak memory usage in megabytes, in pipeline
   // order. Each worker appends its own peak RSS before forwarding.
   repeated uint32 node_peak_memory_mb = 10;
+
+  // True when this call starts a brand-new generation for model_name:
+  // the worker must discard any previous cache and build a fresh one
+  // before running input_tensor, which in this case is the FULL
+  // prompt (or, for non-first shards, hidden states for the whole
+  // prompt). False for a continuation/decode step: the worker reuses
+  // its existing cache and input_tensor is only the single newest
+  // token (first shard) or single newest hidden-state timestep (later
+  // shards). Forwarded unchanged through the pipeline exactly like
+  // request_id, so every hop makes the same reset/reuse decision for
+  // a given step.
+  bool reset_cache = 11;
 }
 
 // Response from running inference on a loaded model shard.

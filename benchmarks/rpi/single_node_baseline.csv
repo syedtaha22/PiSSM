@@ -1,0 +1,9 @@
+timestamp,hostname,arch,model_name,tokens,pass_type,mean_ms,median_ms,min_ms,max_ms,p95_ms,peak_memory_mb
+2026-07-06 11:34:10,rpi-master,mamba,mamba-130m,64,forward_pass,743.87,743.49,738.65,748.56,748.56,1066
+2026-07-06 11:34:10,rpi-master,mamba,mamba-130m,64,generate_30,9299.78,9307.23,9254.74,9325.75,9325.75,1066
+2026-07-06 11:34:10,rpi-master,mamba,mamba-130m,128,forward_pass,1196.72,1196.71,1192.91,1200.76,1200.76,1082
+2026-07-06 11:34:10,rpi-master,mamba,mamba-130m,128,generate_30,9737.08,9733.55,9684.76,9779.36,9779.36,1094
+2026-07-06 11:34:10,rpi-master,mamba,mamba-130m,512,forward_pass,4606.5,4605.63,4587.53,4633.48,4633.48,1362
+2026-07-06 11:34:10,rpi-master,mamba,mamba-130m,512,generate_30,12962.05,12963.06,12942.08,12979.59,12979.59,1375
+2026-07-06 11:34:10,rpi-master,mamba,mamba-130m,1024,forward_pass,9761.46,9766.15,9723.31,9789.34,9789.34,1436
+2026-07-06 11:34:10,rpi-master,mamba,mamba-130m,1024,generate_30,17670.48,17676.84,17626.11,17694.49,17694.49,1459

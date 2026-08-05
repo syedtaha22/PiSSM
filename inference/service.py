@@ -30,6 +30,18 @@ from orchestrator.worker_client import PipelineCallbackClient, WorkerClient
 logger = logging.getLogger(__name__)
 
 
+def _format_error(e: Exception) -> str:
+    """
+    Render an exception as a single log line.
+
+    grpc.RpcError's default str() spans several lines (status, details,
+    debug string), which floods the terminal when logged directly.
+    """
+    if isinstance(e, grpc.RpcError) and hasattr(e, "code") and hasattr(e, "details"):
+        return f"{e.code()}: {e.details()}"
+    return str(e)
+
+
 class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
     """
     Handles LoadShard, RunShard, and UnloadShard RPCs on worker nodes.
@@ -114,7 +126,9 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
             )
 
         except Exception as e:
-            logger.error("Failed to load model '%s': %s", request.model_name, e)
+            logger.error(
+                "Failed to load model '%s': %s", request.model_name, _format_error(e)
+            )
             return inference_pb2.LoadShardResponse(
                 success=False,
                 error_message=str(e),
@@ -163,8 +177,12 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
             pipeline_mode = bool(request.orchestrator_callback_address)
 
             if pipeline_mode:
+                if request.reset_cache or handle.cache is None:
+                    handle.cache = handle.model.new_cache()
                 with torch.no_grad():
-                    output_tensor = handle.model(input_tensor)
+                    output_tensor = handle.model(
+                        input_tensor, cache_params=handle.cache
+                    )
             elif request.generate_mode:
                 with torch.no_grad():
                     output_tensor = handle.model.generate(
@@ -198,6 +216,7 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
                         orchestrator_callback_address=request.orchestrator_callback_address,
                         node_latencies_ms=accumulated_latencies,
                         node_peak_memory_mb=accumulated_memory,
+                        reset_cache=request.reset_cache,
                     )
                     with WorkerClient(handle.next_worker_address) as client:
                         client.run_shard(next_request)
@@ -246,7 +265,9 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
             )
 
         except Exception as e:
-            logger.error("Inference failed on '%s': %s", request.model_name, e)
+            logger.error(
+                "Inference failed on '%s': %s", request.model_name, _format_error(e)
+            )
             return inference_pb2.RunShardResponse(
                 success=False,
                 error_message=str(e),

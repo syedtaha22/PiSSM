@@ -24,6 +24,12 @@ import transformers
 transformers.logging.set_verbosity_error()
 warnings.filterwarnings("ignore", message=".*fast path.*")
 
+# huggingface_hub logs every HTTP request (config/tokenizer/weight
+# fetches, cache-resolution checks) via httpx at INFO level, which
+# floods the console on every model load without saying anything
+# actionable. WARNING+ still surfaces real request failures.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 from transformers import AutoTokenizer, MambaForCausalLM  # noqa: E402
 
 from inference.manifest import ModelManifest  # noqa: E402
@@ -64,6 +70,12 @@ class ModelHandle:
         True if this shard owns the final norm and lm_head.
     next_worker_address : str
         Address of the next worker in the pipeline, or empty string.
+    cache : transformers.cache_utils.Cache or None
+        Recurrent state (conv + SSM state per layer) for incremental
+        decoding, carried across successive RunShard calls for the same
+        generation. None when idle or between generations - a fresh
+        one is built via model.new_cache() at the start of each new
+        generation (see inference/service.py's RunShard handler).
     """
 
     name: str
@@ -77,6 +89,7 @@ class ModelHandle:
     is_first_shard: bool = False
     is_last_shard: bool = False
     next_worker_address: str = ""
+    cache: Any = None
 
 
 def load_model(manifest: ModelManifest) -> ModelHandle:

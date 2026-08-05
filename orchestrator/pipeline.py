@@ -13,6 +13,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 
+import grpc
 import torch
 from tqdm import tqdm
 
@@ -42,6 +43,41 @@ class PipelineResult:
     output_tensor: torch.Tensor
     node_latencies_ms: list
     node_peak_memory_mb: list
+
+
+@dataclass
+class GenerationResult:
+    """
+    Result of a full autoregressive generation via PipelineRunner.generate().
+
+    Parameters
+    ----------
+    output_ids : torch.Tensor
+        Token ids of shape (1, prompt_len + max_new_tokens): the original
+        prompt followed by every generated token.
+    step_results : list[PipelineResult]
+        One PipelineResult per generated token, in generation order.
+    """
+
+    output_ids: torch.Tensor
+    step_results: list
+
+
+@dataclass
+class GenerationStep:
+    """
+    One generated token, produced by PipelineRunner.generate_stream().
+
+    Parameters
+    ----------
+    token_id : torch.Tensor
+        The newly generated token id, shape (1, 1).
+    step_result : PipelineResult
+        The pipeline result that produced this token.
+    """
+
+    token_id: torch.Tensor
+    step_result: PipelineResult
 
 
 class ResultStore:
@@ -223,6 +259,7 @@ class PipelineRunner:
         self._callback_address = orchestrator_callback_address
         self._result_store = result_store
         self._timeout_s = timeout_s
+        self._generation_lock = threading.Lock()
 
     def load(self) -> None:
         """
@@ -258,15 +295,122 @@ class PipelineRunner:
 
     def run_forward(self, input_tensor: torch.Tensor) -> PipelineResult:
         """
-        Fire a pipeline forward pass and wait for the result.
+        Fire a single, standalone pipeline forward pass and wait for the result.
 
-        Assigns a UUID request_id, registers a result slot, fires RunShard
-        at the first worker, and blocks until DeliverResult resolves the slot.
+        Always starts a fresh generation (reset_cache=True): this is a
+        one-off pass, not a step in an autoregressive decode via generate(),
+        so it must never reuse recurrent-state cache left over from a
+        prior generate() call against the same resident model.
 
         Parameters
         ----------
         input_tensor : torch.Tensor
             Token IDs to pass to the first shard.
+
+        Returns
+        -------
+        PipelineResult
+            The result delivered by the last worker.
+
+        Raises
+        ------
+        TimeoutError
+            If no result arrives within timeout_s.
+        """
+        return self._run_shard_step(input_tensor, reset_cache=True)
+
+    def generate(
+        self, input_ids: torch.Tensor, max_new_tokens: int
+    ) -> GenerationResult:
+        """
+        Run one full autoregressive generation using per-request recurrent
+        cache state.
+
+        Built on top of generate_stream(), consuming it fully rather than
+        duplicating its reset_cache/lock logic - see that method for the
+        per-step protocol.
+
+        Parameters
+        ----------
+        input_ids : torch.Tensor
+            Tokenized prompt of shape (1, prompt_len).
+        max_new_tokens : int
+            Number of tokens to generate.
+
+        Returns
+        -------
+        GenerationResult
+            The full output_ids and one PipelineResult per generated token.
+
+        Raises
+        ------
+        TimeoutError
+            If no result arrives within timeout_s for any step.
+        """
+        output_ids = input_ids
+        step_results = []
+        for step in self.generate_stream(input_ids, max_new_tokens):
+            output_ids = torch.cat([output_ids, step.token_id], dim=1)
+            step_results.append(step.step_result)
+        return GenerationResult(output_ids=output_ids, step_results=step_results)
+
+    def generate_stream(self, input_ids: torch.Tensor, max_new_tokens: int):
+        """
+        Generator form of generate(): yields one GenerationStep per token
+        as it's produced, instead of returning only after the whole
+        generation completes.
+
+        Lets a caller (e.g. a streaming HTTP endpoint) forward each token
+        to a client incrementally. Sends exactly one RunShard per new
+        token: the first call has reset_cache=True and carries the full
+        prompt (prefill, rebuilds every worker's cache); each subsequent
+        call has reset_cache=False and carries only the single newest
+        token (decode, reuses cache). Holds self._generation_lock for as
+        long as the caller keeps iterating - not just until the first
+        token is yielded - so an overlapping generate()/generate_stream()
+        call against the same resident model is serialized rather than
+        corrupting worker-side cache state.
+
+        Parameters
+        ----------
+        input_ids : torch.Tensor
+            Tokenized prompt of shape (1, prompt_len).
+        max_new_tokens : int
+            Number of tokens to generate.
+
+        Yields
+        ------
+        GenerationStep
+            One per generated token, in generation order.
+
+        Raises
+        ------
+        TimeoutError
+            If no result arrives within timeout_s for any step.
+        """
+        with self._generation_lock:
+            next_input = input_ids
+            for step in range(max_new_tokens):
+                result = self._run_shard_step(next_input, reset_cache=(step == 0))
+                next_token = (
+                    result.output_tensor[0, -1, :].argmax().unsqueeze(0).unsqueeze(0)
+                )
+                next_input = next_token
+                yield GenerationStep(token_id=next_token, step_result=result)
+
+    def _run_shard_step(
+        self, input_tensor: torch.Tensor, reset_cache: bool
+    ) -> PipelineResult:
+        """
+        Fire one RunShardRequest at the first worker and wait for the result.
+
+        Parameters
+        ----------
+        input_tensor : torch.Tensor
+            Token IDs (first shard) to send for this step.
+        reset_cache : bool
+            True to have every worker discard its cache and rebuild fresh
+            before running input_tensor; False to reuse existing cache.
 
         Returns
         -------
@@ -290,6 +434,7 @@ class PipelineRunner:
             input_dtype=out_dtype,
             request_id=request_id,
             orchestrator_callback_address=self._callback_address,
+            reset_cache=reset_cache,
         )
         addr = f"{first.ip_address}:{first.inference_port}"
         with WorkerClient(addr) as client:
@@ -300,11 +445,25 @@ class PipelineRunner:
     def unload(self) -> None:
         """
         Send UnloadShard to every worker in the plan.
+
+        A worker that's unreachable (e.g. it crashed or was replaced)
+        is logged and skipped rather than aborting the rest - callers
+        such as redistribution rely on every reachable node getting
+        freed even if one node in the old plan is gone.
         """
         for assignment in self._plan.assignments:
             request = inference_pb2.UnloadShardRequest(
                 model_name=self._plan.model_name,
             )
             addr = f"{assignment.ip_address}:{assignment.inference_port}"
-            with WorkerClient(addr) as client:
-                client.unload_shard(request)
+            try:
+                with WorkerClient(addr) as client:
+                    client.unload_shard(request)
+            except grpc.RpcError as err:
+                logger.warning(
+                    "Failed to unload '%s' on %s: %s: %s",
+                    self._plan.model_name,
+                    addr,
+                    err.code().name,
+                    err.details(),
+                )

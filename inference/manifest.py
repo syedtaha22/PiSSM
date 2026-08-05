@@ -2,9 +2,10 @@
 Model manifest parsing and validation.
 
 Provides the ModelManifest dataclass for representing a model's
-configuration, and functions to load and validate manifest YAML files.
-Validation checks all required fields, supported architecture and
-input type values, and positive integer constraints.
+configuration, and functions to load and validate manifest data from
+YAML files or in-memory dictionaries. Validation checks all required
+fields, supported architecture and input type values, and positive
+integer constraints.
 """
 
 from dataclasses import dataclass
@@ -115,6 +116,39 @@ def validate_manifest(data: dict) -> None:
         )
 
 
+def manifest_from_dict(data: dict) -> ModelManifest:
+    """
+    Validate a manifest data dictionary and construct a ModelManifest.
+
+    Parameters
+    ----------
+    data : dict
+        The parsed manifest data, from YAML or JSON.
+
+    Returns
+    -------
+    ModelManifest
+        The validated manifest.
+
+    Raises
+    ------
+    ManifestError
+        If validation fails.
+    """
+    validate_manifest(data)
+
+    return ModelManifest(
+        name=data["name"],
+        arch=data["arch"],
+        checkpoint=data["checkpoint"],
+        layers=data["layers"],
+        hidden_dim=data["hidden_dim"],
+        state_dim=data["state_dim"],
+        input_type=data["input_type"],
+        tokenizer=data["tokenizer"],
+    )
+
+
 def load_manifest(path: str) -> ModelManifest:
     """
     Load and validate a model manifest from a YAML file.
@@ -140,15 +174,4 @@ def load_manifest(path: str) -> ModelManifest:
     except FileNotFoundError:
         raise ManifestError(f"Manifest file not found: {path}")
 
-    validate_manifest(data)
-
-    return ModelManifest(
-        name=data["name"],
-        arch=data["arch"],
-        checkpoint=data["checkpoint"],
-        layers=data["layers"],
-        hidden_dim=data["hidden_dim"],
-        state_dim=data["state_dim"],
-        input_type=data["input_type"],
-        tokenizer=data["tokenizer"],
-    )
+    return manifest_from_dict(data)
