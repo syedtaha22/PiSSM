@@ -34,6 +34,7 @@ export default function Inference() {
   const [metrics, setMetrics] = useState({ latency: '-', peakMemory: '-', nodes: '-', tokensPerSec: '-' })
   const [redistributing, setRedistributing] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const chatContainerRef = useRef<HTMLDivElement>(null)
 
   // Which endpoint the load-and-poll effect below should call: 'load' on
   // a fresh model selection, 'redistribute' when the button below is
@@ -42,7 +43,11 @@ export default function Inference() {
   const pendingActionRef = useRef<'load' | 'redistribute'>('load')
   const [loadTrigger, setLoadTrigger] = useState(0)
 
-  // Fetch the registered models once on mount.
+  // Fetch the registered models once on mount. Deliberately does NOT
+  // auto-select (and therefore does not auto-load) the first model -
+  // loading a model is an explicit, resource-committing action the user
+  // takes from the dropdown, not something that should happen just from
+  // visiting this tab.
   useEffect(() => {
     let cancelled = false
     listModels()
@@ -50,7 +55,6 @@ export default function Inference() {
         if (cancelled) return
         setModels(result)
         setModelsError(null)
-        if (result.length > 0) setSelectedModel(result[0].name)
       })
       .catch((err) => {
         if (!cancelled) {
@@ -143,6 +147,14 @@ export default function Inference() {
     }
   }, [sending])
 
+  // Keep the transcript scrolled to the newest message - including
+  // mid-stream, since appendToken() updates `messages` on every token
+  // and the user shouldn't have to manually scroll down as text grows.
+  useEffect(() => {
+    const el = chatContainerRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [messages])
+
   const handleSend = async () => {
     if (!canSend) return
 
@@ -213,15 +225,22 @@ export default function Inference() {
     <div className="p-8 h-full flex flex-col">
       {/* Model Selection */}
       <div className="mb-8 space-y-2">
-        <label className="text-sm font-medium text-foreground">Model</label>
+        <label htmlFor="model-select" className="text-sm font-medium text-foreground">
+          Model
+        </label>
         <div className="flex gap-2">
           <select
+            id="model-select"
             value={selectedModel}
             onChange={(e) => handleSelectModel(e.target.value)}
             disabled={models.length === 0}
             className="flex-1 px-3 py-2 border border-border rounded bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
           >
-            {models.length === 0 && <option value="">No models registered</option>}
+            {models.length === 0 ? (
+              <option value="">No models registered</option>
+            ) : (
+              <option value="">Select a model...</option>
+            )}
             {models.map((m) => (
               <option key={m.name} value={m.name}>
                 {m.name}
@@ -264,7 +283,10 @@ export default function Inference() {
       </div>
 
       {/* Chat/Timeseries Area */}
-      <div className="flex-1 border-t border-border pt-6 pr-4 mb-6 overflow-y-auto overflow-x-hidden">
+      <div
+        ref={chatContainerRef}
+        className="flex-1 border-t border-border pt-6 pr-4 mb-6 overflow-y-auto overflow-x-hidden"
+      >
         {modelType === 'text' ? (
           <div className="space-y-4">
             {messages.map((msg, i) => {

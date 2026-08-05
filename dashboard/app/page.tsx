@@ -17,10 +17,23 @@ export default function Home() {
       <div className="flex-1 flex flex-col overflow-hidden">
         <Header />
         <main className="flex-1 overflow-auto bg-background">
-          {currentPage === 'dashboard' && <Dashboard />}
-          {currentPage === 'models' && <Models />}
-          {currentPage === 'inference' && <Inference />}
-          {currentPage === 'topology' && <Topology />}
+          {/* Every page stays mounted once visited (hidden via CSS instead
+              of unmounted) so switching tabs never resets component state -
+              the Inference page in particular would otherwise re-fetch
+              models and re-trigger a model load on every tab switch, and
+              lose its chat history and in-flight status each time. */}
+          <div className={currentPage === 'dashboard' ? 'h-full' : 'hidden'}>
+            <Dashboard />
+          </div>
+          <div className={currentPage === 'models' ? 'h-full' : 'hidden'}>
+            <Models />
+          </div>
+          <div className={currentPage === 'inference' ? 'h-full' : 'hidden'}>
+            <Inference />
+          </div>
+          <div className={currentPage === 'topology' ? 'h-full' : 'hidden'}>
+            <Topology />
+          </div>
         </main>
       </div>
     </div>

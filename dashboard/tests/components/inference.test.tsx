@@ -21,7 +21,35 @@ const SAMPLE_MODEL = {
   tokenizer: 'EleutherAI/gpt-neox-20b',
 }
 
+async function selectModel(user: ReturnType<typeof userEvent.setup>) {
+  await waitFor(() =>
+    expect(screen.getByRole('option', { name: 'dummy-mamba-tiny' })).toBeInTheDocument()
+  )
+  await user.selectOptions(screen.getByLabelText('Model'), 'dummy-mamba-tiny')
+}
+
 describe('Inference', () => {
+  it('does not load any model just from listing them - loading is explicit', async () => {
+    vi.spyOn(api, 'listModels').mockResolvedValue([SAMPLE_MODEL])
+    const loadSpy = vi.spyOn(api, 'loadModel').mockResolvedValue({
+      status: 'ready',
+      error: null,
+      num_nodes: 1,
+    })
+
+    render(<Inference />)
+
+    await waitFor(() =>
+      expect(screen.getByRole('option', { name: 'dummy-mamba-tiny' })).toBeInTheDocument()
+    )
+    // Give any errant auto-load effect a chance to fire before asserting
+    // it didn't.
+    await new Promise((r) => setTimeout(r, 50))
+
+    expect(loadSpy).not.toHaveBeenCalled()
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('')
+  })
+
   it('shows a loading message while the model preloads, disabling the input', async () => {
     vi.spyOn(api, 'listModels').mockResolvedValue([SAMPLE_MODEL])
     vi.spyOn(api, 'loadModel').mockResolvedValue({
@@ -35,11 +63,10 @@ describe('Inference', () => {
       num_nodes: 1,
     })
 
+    const user = userEvent.setup()
     render(<Inference />)
+    await selectModel(user)
 
-    await waitFor(() =>
-      expect(screen.getByRole('option', { name: 'dummy-mamba-tiny' })).toBeInTheDocument()
-    )
     await waitFor(() =>
       expect(screen.getByText(/Loading model onto 1 node/)).toBeInTheDocument()
     )
@@ -75,6 +102,7 @@ describe('Inference', () => {
 
     const user = userEvent.setup()
     render(<Inference />)
+    await selectModel(user)
 
     const input = await waitFor(() => {
       const el = screen.getByPlaceholderText('Enter prompt...')
@@ -132,6 +160,7 @@ describe('Inference', () => {
 
     const user = userEvent.setup()
     render(<Inference />)
+    await selectModel(user)
 
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /redistribute/i })).not.toBeDisabled()
@@ -156,7 +185,9 @@ describe('Inference', () => {
       num_nodes: null,
     })
 
+    const user = userEvent.setup()
     render(<Inference />)
+    await selectModel(user)
 
     await waitFor(() =>
       expect(
