@@ -7,6 +7,7 @@ import { getInferenceLog } from '@/lib/history'
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.useRealTimers()
   window.localStorage.clear()
 })
 
@@ -48,6 +49,30 @@ describe('Inference', () => {
 
     expect(loadSpy).not.toHaveBeenCalled()
     expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('')
+  })
+
+  it('polls listModels so a model registered elsewhere eventually appears without a remount', async () => {
+    // Pages stay mounted for the whole session now (app/page.tsx keeps
+    // every tab alive), so Inference can no longer rely on a tab-switch
+    // remount to pick up a model someone just uploaded on the Models
+    // page - it has to notice on its own.
+    vi.useFakeTimers()
+    const listModelsSpy = vi
+      .spyOn(api, 'listModels')
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([SAMPLE_MODEL])
+
+    render(<Inference />)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(listModelsSpy).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('option', { name: 'dummy-mamba-tiny' })).not.toBeInTheDocument()
+
+    // Matches MODELS_POLL_INTERVAL_MS in inference.tsx.
+    await vi.advanceTimersByTimeAsync(3000)
+
+    expect(listModelsSpy).toHaveBeenCalledTimes(2)
+    expect(screen.getByRole('option', { name: 'dummy-mamba-tiny' })).toBeInTheDocument()
   })
 
   it('shows a loading message while the model preloads, disabling the input', async () => {

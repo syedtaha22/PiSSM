@@ -14,6 +14,7 @@ import {
 import { appendInferenceLog } from '@/lib/history'
 
 const STATUS_POLL_INTERVAL_MS = 500
+const MODELS_POLL_INTERVAL_MS = 3000
 
 interface Message {
   id: number
@@ -43,26 +44,36 @@ export default function Inference() {
   const pendingActionRef = useRef<'load' | 'redistribute'>('load')
   const [loadTrigger, setLoadTrigger] = useState(0)
 
-  // Fetch the registered models once on mount. Deliberately does NOT
-  // auto-select (and therefore does not auto-load) the first model -
-  // loading a model is an explicit, resource-committing action the user
-  // takes from the dropdown, not something that should happen just from
-  // visiting this tab.
+  // Poll the registered models list rather than fetching it once - pages
+  // stay mounted for the whole session now (see app/page.tsx), so a model
+  // uploaded on the Models tab after this one first mounted would
+  // otherwise never appear here without a full page reload. Deliberately
+  // does NOT auto-select (and therefore does not auto-load) the first
+  // model - loading a model is an explicit, resource-committing action
+  // the user takes from the dropdown, not something that should happen
+  // just from visiting this tab or from a background refresh.
   useEffect(() => {
     let cancelled = false
-    listModels()
-      .then((result) => {
-        if (cancelled) return
-        setModels(result)
-        setModelsError(null)
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setModelsError(err instanceof Error ? err.message : 'Failed to load models')
-        }
-      })
+
+    function poll() {
+      listModels()
+        .then((result) => {
+          if (cancelled) return
+          setModels(result)
+          setModelsError(null)
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setModelsError(err instanceof Error ? err.message : 'Failed to load models')
+          }
+        })
+    }
+
+    poll()
+    const interval = setInterval(poll, MODELS_POLL_INTERVAL_MS)
     return () => {
       cancelled = true
+      clearInterval(interval)
     }
   }, [])
 
