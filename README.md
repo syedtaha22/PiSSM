@@ -62,7 +62,12 @@ cd PiSSM
 python3 -m venv .venv
 source .venv/bin/activate
 
+make setup
+
+# Equivalent to:
+bash scripts/generate_proto.sh
 pip install .
+cd dashboard && npm install && npm run build && cd ..
 ```
 
 **On Raspberry Pi (aarch64):** `pip install .` may fail with a "No space left on device" or similar error. If it does, install CPU-only torch first:
@@ -79,10 +84,10 @@ If it still fails, open an issue.
 On the machine that will act as the orchestrator:
 
 ```bash
-make run-orchestrator
+python -m orchestrator.server
 ```
 
-This builds the WebUI on first run and starts the orchestrator, listening on port 50051 (gRPC, for workers) and port 8080 (HTTP, for the WebUI).
+This starts the orchestrator, listening on port 50051 (gRPC, for workers) and port 8080 (HTTP, for the WebUI).
 
 On each worker node (a Raspberry Pi in the cluster, or another terminal on the same machine to try it locally):
 
@@ -141,14 +146,14 @@ pip install -e ".[dev]"
 After cloning or any time a `.proto` file changes:
 
 ```bash
-make proto
+make proto  # runs: bash scripts/generate_proto.sh
 ```
 
 ### Run Tests
 
 ```bash
 make test        # fast unit tests
-make test-slow   # tests that load a real model (slow, RAM-heavy)
+make test-slow   # tests that load a model (slow, RAM-heavy)
 ```
 
 ### Format and Lint
@@ -166,13 +171,6 @@ make format   # auto-format with black
 - **Minor (0.x.0):** meaningful additions within an existing subsystem - new endpoints, new model support, new benchmark scripts, significant feature expansion.
 - **Patch (0.0.x):** bug fixes, dependency updates, docs, config, small improvements.
 
-### WebUI Dev Commands
-
-```bash
-make webui-install   # npm install
-make webui-dev       # npm run dev (hot reload, separate from the orchestrator)
-make webui-build     # npm run build (regenerate dashboard/out/ after frontend changes)
-```
 
 ### Repo Structure
 

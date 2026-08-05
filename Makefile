@@ -1,4 +1,11 @@
-.PHONY: proto test test-slow lint format run-orchestrator run-worker clean webui-install webui-dev webui-build
+.PHONY: proto test test-slow lint format clean setup dashboard
+
+# Full local setup: regenerate proto stubs, install the Python package,
+# then build the dashboard. Safe to re-run any time - nothing here is
+# skipped just because it already ran once before.
+setup: proto
+	pip install .
+	$(MAKE) dashboard
 
 proto:
 	bash scripts/generate_proto.sh
@@ -18,27 +25,13 @@ lint:
 format:
 	black .
 
-run-orchestrator: proto dashboard/out/index.html
-	python3 -m orchestrator.server
-
-# Builds the dashboard only if it hasn't been built yet - run `make
-# webui-build` explicitly to rebuild after changing frontend code.
-dashboard/out/index.html:
+# Rebuilds the dashboard unconditionally - use this on its own to pick
+# up frontend changes without re-running the rest of setup.
+dashboard:
 	cd dashboard && npm install && npm run build
-
-run-worker: proto
-	python3 -m worker.daemon
-
-webui-install:
-	cd dashboard && npm install
-
-webui-dev:
-	cd dashboard && npm run dev
-
-webui-build:
-	cd dashboard && npm run build
 
 clean:
 	rm -rvf proto/generated/
 	rm -rvf build/ *.egg-info/
+	rm -rvf dashboard/out/ dashboard/.next/
 	find . -type d -name __pycache__ -exec rm -rvf {} +
