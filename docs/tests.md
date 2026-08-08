@@ -245,7 +245,8 @@ Component under test: `inference.loader` - loads HuggingFace models and tokenize
 | TC-ML-02 | FR-IE-01 | TestLoadModel | Load returns handle | Verify loading a model returns a ModelHandle with all fields set. | Mocked model class and tokenizer. | Default manifest. | 1. Call `load_model`. 2. Check handle fields. | name, model, tokenizer, manifest, loaded_at all set. |
 | TC-ML-03 | FR-IE-01 | TestLoadModel | Load sets eval mode | Verify the model is set to eval mode after loading. | Mocked model class. | Default manifest. | 1. Call `load_model`. 2. Check mock. | `model.eval()` called once. |
 | TC-ML-04 | FR-IE-01 | TestLoadModel | Load sets CPU | Verify the model is moved to CPU after loading. | Mocked model class. | Default manifest. | 1. Call `load_model`. 2. Check mock. | `model.to("cpu")` called once. |
-| TC-ML-05 | FR-IE-01 | TestUnloadModel | Unload clears references | Verify unloading sets model and tokenizer to None. | ModelHandle with mock model/tokenizer. | None. | 1. Call `unload_model`. 2. Check handle. | model is None, tokenizer is None. |
+| TC-ML-05 | FR-IE-01 | TestLoadModel | Reports weight byte size | Verify memory_mb is the sum of parameter and buffer tensor bytes, not a live RSS reading. | Mocked model with real `torch.nn.Parameter`/tensor buffer. | 300,000-element parameter, 50,000-element buffer (float32). | 1. Call `load_model`. 2. Check handle.memory_mb. | memory_mb equals `(1_200_000 + 200_000) // (1024*1024)`. |
+| TC-ML-06 | FR-IE-01 | TestUnloadModel | Unload clears references | Verify unloading sets model and tokenizer to None. | ModelHandle with mock model/tokenizer. | None. | 1. Call `unload_model`. 2. Check handle. | model is None, tokenizer is None. |
 
 ### InferenceServiceServicer (`tests/unit/test_inference_service.py`)
 
