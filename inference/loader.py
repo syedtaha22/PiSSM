@@ -20,6 +20,7 @@ import psutil
 import torch
 
 import transformers
+from huggingface_hub.utils import disable_progress_bars
 
 transformers.logging.set_verbosity_error()
 warnings.filterwarnings("ignore", message=".*fast path.*")
@@ -30,6 +31,20 @@ warnings.filterwarnings("ignore", message=".*fast path.*")
 # actionable. WARNING+ still surfaces real request failures.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+# The no-token rate-limit nag ("You are sending unauthenticated
+# requests...") is purely informational and repeats on every model
+# load. huggingface_hub has emitted it via both a logger and a plain
+# warnings.warn() across different versions, so both are silenced
+# here rather than guessing which one a given version uses.
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=".*unauthenticated requests.*")
+
+# huggingface_hub prints its own file-download progress bars for every
+# config/tokenizer/weight fetch it makes internally. None of these
+# carry information beyond what's already logged above, so they're
+# disabled globally rather than per call site.
+disable_progress_bars()
+
 from transformers import AutoTokenizer, MambaForCausalLM  # noqa: E402
 
 from inference.manifest import ModelManifest  # noqa: E402
@@ -39,6 +54,25 @@ logger = logging.getLogger(__name__)
 _ARCH_TO_MODEL_CLASS = {
     "mamba": MambaForCausalLM,
 }
+
+
+def _weight_bytes_mb(module: torch.nn.Module) -> int:
+    """
+    Sum of a module's parameter and buffer tensor byte sizes.
+
+    Parameters
+    ----------
+    module : torch.nn.Module
+        The model or shard to measure.
+
+    Returns
+    -------
+    int
+        Total parameter and buffer byte size in megabytes.
+    """
+    total_bytes = sum(p.numel() * p.element_size() for p in module.parameters())
+    total_bytes += sum(b.numel() * b.element_size() for b in module.buffers())
+    return total_bytes // (1024 * 1024)
 
 
 @dataclass
@@ -57,7 +91,7 @@ class ModelHandle:
     manifest : Any
         The manifest used to load this model. None for pipeline shards.
     memory_mb : int
-        Approximate memory consumed by the model in megabytes.
+        Byte size of the model's parameter and buffer tensors, in MB.
     loaded_at : float
         Monotonic timestamp when the model was loaded.
     layer_start : int
@@ -121,9 +155,6 @@ def load_model(manifest: ModelManifest) -> ModelHandle:
             f"Supported: {list(_ARCH_TO_MODEL_CLASS.keys())}"
         )
 
-    process = psutil.Process()
-    mem_before = process.memory_info().rss
-
     logger.info("Loading tokenizer '%s'", manifest.tokenizer)
     tokenizer = AutoTokenizer.from_pretrained(manifest.tokenizer)
     if tokenizer.pad_token is None:
@@ -134,11 +165,10 @@ def load_model(manifest: ModelManifest) -> ModelHandle:
     model.to("cpu")
     model.eval()
 
-    mem_after = process.memory_info().rss
-    memory_mb = max(0, (mem_after - mem_before) // (1024 * 1024))
+    memory_mb = _weight_bytes_mb(model)
 
     logger.info(
-        "Model '%s' loaded: ~%d MB, %d layers",
+        "Model '%s' ready: weights ~%d MB, %d layers",
         manifest.name,
         memory_mb,
         manifest.layers,
@@ -243,9 +273,6 @@ def load_shard_from_bytes(
             f"Supported: {list(_ARCH_TO_SHARD_CLASS.keys())}"
         )
 
-    process = psutil.Process()
-    mem_before = process.memory_info().rss
-
     shard = shard_cls.from_bytes(
         shard_weights_bytes,
         model_config_json_bytes,
@@ -257,11 +284,10 @@ def load_shard_from_bytes(
     shard.to("cpu")
     shard.eval()
 
-    mem_after = process.memory_info().rss
-    memory_mb = max(0, (mem_after - mem_before) // (1024 * 1024))
+    memory_mb = _weight_bytes_mb(shard)
 
     logger.info(
-        "Shard '%s' loaded: layers [%d, %d), ~%d MB",
+        "Shard '%s' ready: layers [%d, %d), weights ~%d MB",
         model_name,
         layer_start,
         layer_end,

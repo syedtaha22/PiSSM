@@ -1,11 +1,14 @@
-.PHONY: proto test test-slow lint format clean setup dashboard
+.PHONY: proto test test-slow lint format clean setup setup-orch dashboard
+
 
 # Full local setup: regenerate proto stubs, install the Python package,
 # then build the dashboard. Safe to re-run any time - nothing here is
 # skipped just because it already ran once before.
+setup-orch: setup
+	$(MAKE) dashboard
+
 setup: proto
 	pip install .
-	$(MAKE) dashboard
 
 proto:
 	bash scripts/generate_proto.sh
