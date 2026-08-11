@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 from proto.generated import inference_pb2
 from orchestrator.worker_client import PipelineCallbackClient, WorkerClient
 
-_512MB = 512 * 1024 * 1024
+_64MB = 64 * 1024 * 1024
 
 
 class TestWorkerClient:
@@ -87,10 +87,10 @@ class TestWorkerClient:
 
         mock_channel.close.assert_called_once()
 
-    def test_channel_configured_with_large_message_size(self):
+    def test_channel_configured_with_message_size_headroom(self):
         """
         The channel is created with max_send and max_receive options of
-        at least 512 MB so that shard weight bytes fit in a single message.
+        at least 64 MB.
         """
         with (
             patch(
@@ -102,8 +102,8 @@ class TestWorkerClient:
 
             _, kwargs = mock_channel_fn.call_args
             options = dict(kwargs.get("options", []))
-            assert options.get("grpc.max_send_message_length", 0) >= _512MB
-            assert options.get("grpc.max_receive_message_length", 0) >= _512MB
+            assert options.get("grpc.max_send_message_length", 0) >= _64MB
+            assert options.get("grpc.max_receive_message_length", 0) >= _64MB
 
 
 class TestPipelineCallbackClient:
@@ -129,3 +129,29 @@ class TestPipelineCallbackClient:
             client.deliver_result(request)
 
             mock_stub.DeliverResult.assert_called_once_with(request)
+
+    def test_report_shard_ready_delegates_to_stub(self):
+        """
+        report_shard_ready calls stub.ReportShardReady with the provided
+        request and a bounded timeout - this call runs unsupervised on a
+        worker's background load thread, so it must never be able to
+        block forever against an unreachable or slow-to-resolve address.
+        """
+        with (
+            patch("orchestrator.worker_client.grpc.insecure_channel"),
+            patch(
+                "orchestrator.worker_client.PipelineCallbackServiceStub"
+            ) as mock_stub_cls,
+        ):
+            mock_stub = MagicMock()
+            mock_stub_cls.return_value = mock_stub
+            client = PipelineCallbackClient("localhost:50060")
+
+            request = inference_pb2.ShardReadyRequest(
+                model_name="mamba-130m", node_id="node-0", success=True
+            )
+            client.report_shard_ready(request)
+
+            _, kwargs = mock_stub.ReportShardReady.call_args
+            assert mock_stub.ReportShardReady.call_args[0][0] == request
+            assert 0 < kwargs.get("timeout", 0) <= 30

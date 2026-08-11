@@ -2,9 +2,9 @@
 
 ## Objective
 
-The goal of this sprint is to produce a working vertical slice of PiSSM: Mamba inference running across at least two nodes, both interfaces functional at a basic level, and initial benchmark data in hand. The formal FYP semester should begin with working hardware, a proven architecture, and real latency numbers rather than a blank slate.
+The goal of this sprint is to produce a working vertical slice of PiSSM: Mamba inference running across at least two nodes, the WebUI functional at a basic level, and initial benchmark data in hand. The formal FYP semester should begin with working hardware, a proven architecture, and real latency numbers rather than a blank slate.
 
-At the end of this sprint, a user should be able to submit a Mamba-130M checkpoint via the TUI, run inference against it on a live multi-node cluster, and receive output -- without touching any Python directly. Latency benchmarks comparing single-node and two-node execution will exist as a CSV.
+At the end of this sprint, a user should be able to submit a Mamba-130M checkpoint via the WebUI, run inference against it on a live multi-node cluster, and receive output -- without touching any Python directly. Latency benchmarks comparing single-node and two-node execution will exist as a CSV.
 
 ---
 
@@ -36,7 +36,7 @@ The inference pipeline runs as follows:
 
 1. Orchestrator receives a run request
 2. Orchestrator sends `LoadShard` to each worker with the checkpoint path and assigned layer range
-3. Workers load their layers into memory
+3. Workers load their layers into memory, and report back to the orchestrator
 4. Orchestrator sends the input to node 0
 5. Node 0 runs its layers and forwards activations to node 1
 6. Node 1 runs its layers and returns the result to the orchestrator
@@ -48,11 +48,9 @@ Two-node latency is measured and compared against the single-node baseline. The 
 
 ## Interfaces
 
-The TUI is built in Textual with a two-panel layout: a status panel showing the live node list and cluster RAM utilization, and a command panel for user input. The commands `listn`, `compile <manifest>`, `run <model> "<input>"`, and `status` are implemented. The TUI communicates with the orchestrator over FastAPI HTTP.
-
 The WebUI is a React frontend backed by FastAPI. The routes `GET /nodes`, `POST /models`, `GET /models`, and `POST /infer` are defined first. The frontend provides a dashboard with per-node status cards, a model submission form, and an inference panel with text input and output display.
 
-Both interfaces are integrated against the live two-node cluster rather than developed in isolation.
+The WebUI is integrated against the live two-node cluster rather than developed in isolation.
 
 ---
 
@@ -66,7 +64,6 @@ The following are full system requirements deferred to the FYP semester:
 - Quantization
 - Topology YAML editor
 - Benchmark mode with aggregate statistics and CSV export
-- Extended TUI commands (`logs`, `vim topology.yaml`)
 
 ---
 
@@ -81,4 +78,9 @@ Before the inference daemon is finalized, a decision is needed on shard residenc
 - gRPC Python quickstart: https://grpc.io/docs/languages/python/quickstart/
 - Protocol Buffers language guide (proto3): https://protobuf.dev/programming-guides/proto3/
 - Mamba-130M checkpoint: https://huggingface.co/state-spaces/mamba-130m
-- Textual documentation: https://textual.textualize.io/
+
+---
+
+## Changelog
+
+- [2026-08-09] - Removed the TUI from this sprint's scope. Reason: descoped to save time this summer - the WebUI is faster to develop and covers the same near-term needs. Whether and when the TUI returns is undecided.

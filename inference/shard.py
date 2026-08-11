@@ -6,13 +6,45 @@ plus optional embedding (first shard) and norm + lm_head (last shard).
 New architectures register a class in _ARCH_TO_SHARD_CLASS.
 """
 
-import gc
-import io
-import json
+import re
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+from safetensors import safe_open
 from transformers.cache_utils import Cache, DynamicCache
+from transformers.models.mamba.modeling_mamba import MambaBlock, MambaRMSNorm
+
+from inference.weights import fetch_source_file
+
+_LAYER_NAME_RE = re.compile(r"^backbone\.layers\.(\d+)\.(.+)$")
+
+
+@dataclass
+class TensorLocationSpec:
+    """
+    One tensor a shard needs and where to fetch it from.
+
+    Plain-Python mirror of the proto TensorLocation message, kept
+    independent of protobuf so tensor_locations_for_range stays a pure,
+    trivially unit-testable function.
+
+    Parameters
+    ----------
+    dest_name : str
+        The parameter's name within the shard module's own state_dict,
+        e.g. "layers.0.mixer.A_log" or "lm_head.weight".
+    source_name : str
+        The tensor's name within the checkpoint's weight map, e.g.
+        "backbone.layers.5.mixer.A_log". Differs from dest_name only
+        for a tied lm_head, which sources from the embedding tensor.
+    source_file : str
+        The checkpoint file this tensor lives in.
+    """
+
+    dest_name: str
+    source_name: str
+    source_file: str
 
 
 class MambaShardModule(nn.Module):
@@ -157,29 +189,29 @@ class MambaShardModule(nn.Module):
         )
 
     @classmethod
-    def from_bytes(
+    def tensor_locations_for_range(
         cls,
-        weights_bytes: bytes,
-        config_json_bytes: bytes,
+        weight_map: dict,
         layer_start: int,
         layer_end: int,
         is_first: bool,
         is_last: bool,
-    ) -> "MambaShardModule":
+    ) -> list:
         """
-        Reconstruct a shard from serialized weights and config.
+        Resolve which checkpoint tensors this shard needs and where.
 
-        Creates a temporary full model from the received config to
-        establish the correct layer architecture, slices the target
-        range, loads the received state_dict, and discards the full
-        model reference.
+        Pure name-matching against a checkpoint's weight_map - no
+        network or tensor bytes involved. Layer tensor names are
+        renumbered from the checkpoint's global layer index to this
+        shard's own local index (layer_idx - layer_start), since the
+        shard's own ModuleList is always zero-based.
 
         Parameters
         ----------
-        weights_bytes : bytes
-            Serialized shard state_dict from torch.save.
-        config_json_bytes : bytes
-            JSON-encoded model config from model.config.to_json_string.
+        weight_map : dict
+            Tensor name -> source filename, as read from the
+            checkpoint's safetensors header/index
+            (inference.weights.read_checkpoint_metadata).
         layer_start : int
             First layer index (inclusive).
         layer_end : int
@@ -191,18 +223,140 @@ class MambaShardModule(nn.Module):
 
         Returns
         -------
-        MambaShardModule
-            A shard with weights loaded from the received bytes.
+        list[TensorLocationSpec]
+            One entry per tensor this shard needs to load.
         """
-        from transformers import MambaConfig, MambaForCausalLM
+        locations = []
 
-        config = MambaConfig.from_dict(json.loads(config_json_bytes.decode()))
-        tmp = MambaForCausalLM(config)
-        shard = cls.from_model(tmp, layer_start, layer_end, is_first, is_last)
-        del tmp
-        gc.collect()
+        if is_first:
+            name = "backbone.embeddings.weight"
+            locations.append(
+                TensorLocationSpec(
+                    dest_name="embeddings.weight",
+                    source_name=name,
+                    source_file=weight_map[name],
+                )
+            )
 
-        state_dict = torch.load(io.BytesIO(weights_bytes), weights_only=True)
+        for name, source_file in weight_map.items():
+            match = _LAYER_NAME_RE.match(name)
+            if match is None:
+                continue
+            layer_idx = int(match.group(1))
+            if not (layer_start <= layer_idx < layer_end):
+                continue
+            local_idx = layer_idx - layer_start
+            locations.append(
+                TensorLocationSpec(
+                    dest_name=f"layers.{local_idx}.{match.group(2)}",
+                    source_name=name,
+                    source_file=source_file,
+                )
+            )
+
+        if is_last:
+            norm_name = "backbone.norm_f.weight"
+            locations.append(
+                TensorLocationSpec(
+                    dest_name="norm_f.weight",
+                    source_name=norm_name,
+                    source_file=weight_map[norm_name],
+                )
+            )
+
+            lm_head_name = "lm_head.weight"
+            if lm_head_name in weight_map:
+                source_name = lm_head_name
+            else:
+                # Tied to the input embedding (mamba's default): the
+                # checkpoint has no separate storage for lm_head.weight,
+                # so load it from the embedding tensor instead.
+                source_name = "backbone.embeddings.weight"
+            locations.append(
+                TensorLocationSpec(
+                    dest_name="lm_head.weight",
+                    source_name=source_name,
+                    source_file=weight_map[source_name],
+                )
+            )
+
+        return locations
+
+    @classmethod
+    def from_tensor_locations(
+        cls,
+        config,
+        layer_start: int,
+        layer_end: int,
+        is_first: bool,
+        is_last: bool,
+        checkpoint: str,
+        tensor_locations: list,
+    ) -> "MambaShardModule":
+        """
+        Build a shard directly for [layer_start, layer_end) and load it.
+
+        Constructs only this shard's own layers, embedding, and/or
+        norm+lm_head straight from config, then fetches each distinct
+        checkpoint file tensor_locations references (once per file) and
+        pulls out just the needed tensors via safetensors' mmap-backed
+        get_tensor(), which reads each tensor from disk on demand.
+
+        Parameters
+        ----------
+        config : transformers.MambaConfig
+            The *full* (un-sliced) model's config.
+        layer_start : int
+            First layer index (inclusive).
+        layer_end : int
+            Last layer index (exclusive).
+        is_first : bool
+            True if this shard owns the embedding.
+        is_last : bool
+            True if this shard owns norm and lm_head.
+        checkpoint : str
+            HuggingFace repo id or local path, used to resolve each
+            source_file in tensor_locations to a local path.
+        tensor_locations : list[TensorLocationSpec]
+            Which tensors to load and where each comes from.
+
+        Returns
+        -------
+        MambaShardModule
+            A shard built for this layer range with the requested
+            tensors loaded.
+        """
+        layers = [
+            MambaBlock(config, layer_idx=i) for i in range(layer_start, layer_end)
+        ]
+        embeddings = (
+            nn.Embedding(config.vocab_size, config.hidden_size) if is_first else None
+        )
+        norm_f = (
+            MambaRMSNorm(config.hidden_size, eps=config.layer_norm_epsilon)
+            if is_last
+            else None
+        )
+        lm_head = (
+            nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+            if is_last
+            else None
+        )
+        shard = cls(
+            layers, is_first, is_last, embeddings, norm_f, lm_head, config=config
+        )
+
+        locations_by_file: dict[str, list] = {}
+        for location in tensor_locations:
+            locations_by_file.setdefault(location.source_file, []).append(location)
+
+        state_dict = {}
+        for source_file, locations in locations_by_file.items():
+            path = fetch_source_file(checkpoint, source_file)
+            with safe_open(path, framework="pt") as f:
+                for location in locations:
+                    state_dict[location.dest_name] = f.get_tensor(location.source_name)
+
         shard.load_state_dict(state_dict)
         return shard
 

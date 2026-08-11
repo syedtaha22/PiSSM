@@ -1,43 +1,49 @@
 """
-Full-model host for weight extraction on the orchestrator.
+Checkpoint metadata host for shard planning on the orchestrator.
 
-The orchestrator loads the complete model once, extracts per-shard
-weight bytes for each worker in the dispatch plan, and drops the full
-model reference after all shards are distributed.
+The orchestrator calls load() once to read a checkpoint's safetensors
+header/index and model config, then calls extract_shard() for each
+assignment in the dispatch plan to get the list of tensors that shard
+owns and where to fetch them from. Neither step touches the checkpoint's
+weight bytes, so this class's memory footprint is O(metadata size).
 """
 
-import gc
-import io
+from huggingface_hub.utils import disable_progress_bars
+from transformers import AutoConfig
 
-import torch
-
-from inference.loader import load_model, unload_model
 from inference.shard import _ARCH_TO_SHARD_CLASS
+from inference.weights import read_checkpoint_metadata
+
+# disable huggingface's progress bars on the orchestrator
+disable_progress_bars()
 
 
 class ModelStore:
     """
-    Downloads a full model and extracts shard weight bytes for workers.
+    Reads checkpoint metadata and computes per-shard tensor assignments.
 
     The orchestrator calls load() once, then calls extract_shard() for
-    each assignment in the dispatch plan to obtain (weights_bytes,
+    each assignment in the dispatch plan to obtain (tensor_locations,
     config_json_bytes) to send in LoadShard requests. Call unload() to
-    release the full model from memory after all shards are distributed.
+    drop the cached metadata once all shards are distributed.
     """
 
     def __init__(self) -> None:
-        self._handle = None
+        self._metadata = None
+        self._config_json = None
 
     def load(self, manifest) -> None:
         """
-        Download and load the full model into orchestrator memory.
+        Read the checkpoint's safetensors header/index and model config.
 
         Parameters
         ----------
         manifest : ModelManifest
             The manifest describing the model to load.
         """
-        self._handle = load_model(manifest)
+        self._metadata = read_checkpoint_metadata(manifest.checkpoint)
+        config = AutoConfig.from_pretrained(manifest.checkpoint)
+        self._config_json = config.to_json_string().encode()
 
     def extract_shard(
         self,
@@ -46,9 +52,9 @@ class ModelStore:
         layer_end: int,
         is_first: bool,
         is_last: bool,
-    ) -> tuple[bytes, bytes]:
+    ) -> tuple[list, bytes]:
         """
-        Serialize a shard's weights and config for a given layer range.
+        Resolve a shard's tensor locations and config for a layer range.
 
         Parameters
         ----------
@@ -65,18 +71,19 @@ class ModelStore:
 
         Returns
         -------
-        tuple[bytes, bytes]
-            (shard_weights_bytes, model_config_json_bytes)
+        tuple[list, bytes]
+            (tensor_locations, model_config_json_bytes), where
+            tensor_locations is a list of the arch's TensorLocationSpec.
 
         Raises
         ------
         RuntimeError
-            If no model is loaded.
+            If no checkpoint metadata is loaded.
         NotImplementedError
             If the architecture is not registered in _ARCH_TO_SHARD_CLASS.
         """
-        if self._handle is None:
-            raise RuntimeError("No model loaded. Call load() first.")
+        if self._metadata is None:
+            raise RuntimeError("No checkpoint metadata loaded. Call load() first.")
 
         shard_cls = _ARCH_TO_SHARD_CLASS.get(arch)
         if shard_cls is None:
@@ -85,23 +92,15 @@ class ModelStore:
                 f"Supported: {list(_ARCH_TO_SHARD_CLASS.keys())}"
             )
 
-        shard = shard_cls.from_model(
-            self._handle.model, layer_start, layer_end, is_first, is_last
+        locations = shard_cls.tensor_locations_for_range(
+            self._metadata.weight_map, layer_start, layer_end, is_first, is_last
         )
 
-        buf = io.BytesIO()
-        torch.save(shard.state_dict(), buf)
-        weights_bytes = buf.getvalue()
-
-        config_json = self._handle.model.config.to_json_string().encode()
-
-        return weights_bytes, config_json
+        return locations, self._config_json
 
     def unload(self) -> None:
         """
-        Release the loaded model from orchestrator memory.
+        Release the cached checkpoint metadata.
         """
-        if self._handle is not None:
-            unload_model(self._handle)
-            self._handle = None
-            gc.collect()
+        self._metadata = None
+        self._config_json = None

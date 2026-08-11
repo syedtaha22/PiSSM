@@ -20,6 +20,7 @@ from orchestrator.pipeline import (
     GenerationResult,
     GenerationStep,
     PipelineCallbackServicer,
+    PipelineError,
     PipelineResult,
     PipelineRunner,
     ResultStore,
@@ -61,6 +62,7 @@ def make_two_node_plan():
         ],
         arch="mamba",
         model_name="mamba-130m",
+        checkpoint="state-spaces/mamba-130m-hf",
         total_layers=24,
     )
 
@@ -87,15 +89,42 @@ def make_runner(plan=None, callback_address="localhost:50060", timeout_s=1.0):
         plan = make_two_node_plan()
     result_store = ResultStore()
     mock_store = MagicMock()
-    mock_store.extract_shard.return_value = (b"fake_weights", b"fake_config")
+    mock_store.extract_shard.return_value = ([], b"fake_config")
     runner = PipelineRunner(
         model_store=mock_store,
         plan=plan,
         orchestrator_callback_address=callback_address,
         result_store=result_store,
         timeout_s=timeout_s,
+        load_timeout_s=timeout_s,
     )
     return runner, result_store
+
+
+def make_shard_ready_request(
+    model_name="mamba-130m",
+    node_id="node-0",
+    success=True,
+    error_message="",
+    memory_used_mb=12,
+    layers_loaded=12,
+):
+    """
+    Build a ShardReadyRequest with sensible defaults.
+
+    Returns
+    -------
+    inference_pb2.ShardReadyRequest
+        A populated shard-ready report.
+    """
+    return inference_pb2.ShardReadyRequest(
+        model_name=model_name,
+        node_id=node_id,
+        success=success,
+        error_message=error_message,
+        memory_used_mb=memory_used_mb,
+        layers_loaded=layers_loaded,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +178,8 @@ class TestResultStore:
 
 class TestPipelineCallbackServicer:
     """
-    Tests for PipelineCallbackServicer: DeliverResult RPC handler.
+    Tests for PipelineCallbackServicer: DeliverResult and
+    ReportShardReady RPC handlers.
     """
 
     def test_deliver_result_resolves_slot(self):
@@ -182,6 +212,31 @@ class TestPipelineCallbackServicer:
         assert result.node_latencies_ms == pytest.approx([8.5, 11.2])
         assert result.node_peak_memory_mb == [240, 310]
 
+    def test_report_shard_ready_resolves_slot(self):
+        """
+        ReportShardReady delivers the reported outcome to the
+        namespaced "shard:{model_name}:{node_id}" slot in ResultStore.
+        """
+        store = ResultStore()
+        store.create_slot("shard:mamba-130m:node-0")
+        servicer = PipelineCallbackServicer(store)
+
+        request = make_shard_ready_request(
+            model_name="mamba-130m",
+            node_id="node-0",
+            success=True,
+            memory_used_mb=260,
+            layers_loaded=12,
+        )
+
+        response = servicer.ReportShardReady(request, MagicMock())
+
+        assert response.acknowledged is True
+        result = store.wait("shard:mamba-130m:node-0", timeout_s=0.1)
+        assert result.success is True
+        assert result.memory_used_mb == 260
+        assert result.layers_loaded == 12
+
 
 # ---------------------------------------------------------------------------
 # PipelineRunner.load
@@ -190,45 +245,251 @@ class TestPipelineCallbackServicer:
 
 class TestPipelineRunnerLoad:
     """
-    Tests for PipelineRunner.load: sends LoadShard to each worker.
+    Tests for PipelineRunner.load: two-phase dispatch (send LoadShard
+    metadata to every worker) then wait (block on every worker's
+    ReportShardReady before returning).
     """
 
     @patch("orchestrator.pipeline.WorkerClient")
-    def test_load_sends_load_shard_to_each_worker(self, mock_worker_cls):
+    def test_load_dispatches_load_shard_to_each_worker(self, mock_worker_cls):
         """
-        load() calls WorkerClient.load_shard once for every assignment.
+        load() calls WorkerClient.load_shard once for every assignment,
+        and only returns once every worker's ReportShardReady arrives.
         """
-        runner, _ = make_runner()
+        runner, result_store = make_runner()
+        mock_client = mock_worker_cls.return_value.__enter__.return_value
+
+        def deliver(request):
+            is_node0 = request.layer_start == 0
+            node_id = "node-0" if is_node0 else "node-1"
+            servicer = PipelineCallbackServicer(result_store)
+            servicer.ReportShardReady(
+                make_shard_ready_request(model_name="mamba-130m", node_id=node_id),
+                MagicMock(),
+            )
+            return inference_pb2.LoadShardResponse(success=True)
+
+        mock_client.load_shard.side_effect = deliver
+
         runner.load()
 
-        mock_client = mock_worker_cls.return_value.__enter__.return_value
         assert mock_client.load_shard.call_count == 2
+
+    @patch("orchestrator.pipeline.tqdm")
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_load_progress_bars_use_leave_false(self, mock_worker_cls, mock_tqdm):
+        """
+        Both of load()'s progress bars (dispatch and wait phases) are
+        created with leave=False, so they clear themselves on
+        completion instead of littering the terminal - this project's
+        established progress-bar convention.
+        """
+        mock_tqdm.return_value.__enter__.return_value = MagicMock()
+        runner, result_store = make_runner()
+        mock_client = mock_worker_cls.return_value.__enter__.return_value
+
+        def deliver(request):
+            node_id = "node-0" if request.layer_start == 0 else "node-1"
+            PipelineCallbackServicer(result_store).ReportShardReady(
+                make_shard_ready_request(model_name="mamba-130m", node_id=node_id),
+                MagicMock(),
+            )
+            return inference_pb2.LoadShardResponse(success=True)
+
+        mock_client.load_shard.side_effect = deliver
+
+        runner.load()
+
+        assert mock_tqdm.call_count == 2
+        for call in mock_tqdm.call_args_list:
+            assert call.kwargs.get("leave") is False
 
     @patch("orchestrator.pipeline.WorkerClient")
     def test_load_sends_correct_next_worker_address_to_first_worker(
         self, mock_worker_cls
     ):
         """
-        The first worker's LoadShard carries the second worker's address.
+        The first worker's LoadShard carries the second worker's address,
+        checkpoint, and orchestrator callback address.
         """
-        runner, _ = make_runner()
+        runner, result_store = make_runner()
+        mock_client = mock_worker_cls.return_value.__enter__.return_value
+
+        def deliver(request):
+            node_id = "node-0" if request.layer_start == 0 else "node-1"
+            PipelineCallbackServicer(result_store).ReportShardReady(
+                make_shard_ready_request(model_name="mamba-130m", node_id=node_id),
+                MagicMock(),
+            )
+            return inference_pb2.LoadShardResponse(success=True)
+
+        mock_client.load_shard.side_effect = deliver
+
         runner.load()
 
-        mock_client = mock_worker_cls.return_value.__enter__.return_value
         first_request = mock_client.load_shard.call_args_list[0][0][0]
         assert first_request.next_worker_address == "192.168.1.11:50052"
+        assert first_request.checkpoint == "state-spaces/mamba-130m-hf"
+        assert first_request.orchestrator_callback_address == "localhost:50060"
 
     @patch("orchestrator.pipeline.WorkerClient")
     def test_load_sends_empty_next_worker_address_to_last_worker(self, mock_worker_cls):
         """
         The last worker's LoadShard has an empty next_worker_address.
         """
-        runner, _ = make_runner()
+        runner, result_store = make_runner()
+        mock_client = mock_worker_cls.return_value.__enter__.return_value
+
+        def deliver(request):
+            node_id = "node-0" if request.layer_start == 0 else "node-1"
+            PipelineCallbackServicer(result_store).ReportShardReady(
+                make_shard_ready_request(model_name="mamba-130m", node_id=node_id),
+                MagicMock(),
+            )
+            return inference_pb2.LoadShardResponse(success=True)
+
+        mock_client.load_shard.side_effect = deliver
+
         runner.load()
 
-        mock_client = mock_worker_cls.return_value.__enter__.return_value
         last_request = mock_client.load_shard.call_args_list[-1][0][0]
         assert last_request.next_worker_address == ""
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_load_raises_if_worker_rejects_load_shard(self, mock_worker_cls):
+        """
+        load() raises PipelineError if a worker's LoadShardResponse
+        itself reports success=False (request rejected outright).
+        """
+        runner, _ = make_runner()
+        mock_client = mock_worker_cls.return_value.__enter__.return_value
+        mock_client.load_shard.return_value = inference_pb2.LoadShardResponse(
+            success=False, error_message="model already loaded"
+        )
+
+        with pytest.raises(PipelineError, match="already loaded"):
+            runner.load()
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_load_raises_if_worker_reports_shard_ready_failure(self, mock_worker_cls):
+        """
+        load() raises PipelineError if a worker's background load fails,
+        reported via ReportShardReady after LoadShard itself succeeded.
+        """
+        runner, result_store = make_runner()
+        mock_client = mock_worker_cls.return_value.__enter__.return_value
+
+        def deliver(request):
+            node_id = "node-0" if request.layer_start == 0 else "node-1"
+            success = node_id != "node-1"
+            PipelineCallbackServicer(result_store).ReportShardReady(
+                make_shard_ready_request(
+                    model_name="mamba-130m",
+                    node_id=node_id,
+                    success=success,
+                    error_message="" if success else "checkpoint fetch failed",
+                ),
+                MagicMock(),
+            )
+            return inference_pb2.LoadShardResponse(success=True)
+
+        mock_client.load_shard.side_effect = deliver
+
+        with pytest.raises(PipelineError, match="checkpoint fetch failed"):
+            runner.load()
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_load_raises_on_load_wait_timeout(self, mock_worker_cls):
+        """
+        load() dispatches LoadShard to every worker (the dispatch phase
+        completes even though nothing will ever finish "downloading"),
+        then raises TimeoutError waiting for a ReportShardReady that
+        never arrives - proving dispatch and wait are separate phases.
+        """
+        runner, _ = make_runner(timeout_s=0.01)
+        mock_client = mock_worker_cls.return_value.__enter__.return_value
+        mock_client.load_shard.return_value = inference_pb2.LoadShardResponse(
+            success=True
+        )
+
+        with pytest.raises(TimeoutError):
+            runner.load()
+
+        assert mock_client.load_shard.call_count == 2
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_load_timeout_defaults_to_waiting_indefinitely(self, mock_worker_cls):
+        """
+        PipelineRunner's load_timeout_s defaults to None (wait forever)
+        when not given explicitly - a shard download has no natural
+        deadline to guess at, unlike a single forward pass. Verified by
+        checking the value ResultStore.wait actually receives, not by
+        waiting forever.
+        """
+        plan = make_two_node_plan()
+        mock_result_store = MagicMock()
+        mock_result_store.wait.return_value = MagicMock(success=True)
+        mock_store = MagicMock()
+        mock_store.extract_shard.return_value = ([], b"fake_config")
+        runner = PipelineRunner(
+            model_store=mock_store,
+            plan=plan,
+            orchestrator_callback_address="localhost:50060",
+            result_store=mock_result_store,
+        )
+        mock_client = mock_worker_cls.return_value.__enter__.return_value
+        mock_client.load_shard.return_value = inference_pb2.LoadShardResponse(
+            success=True
+        )
+
+        runner.load()
+
+        for call in mock_result_store.wait.call_args_list:
+            assert call.args[1] is None
+
+    @patch("orchestrator.pipeline.WorkerClient")
+    def test_load_waits_on_workers_concurrently_not_sequentially(self, mock_worker_cls):
+        """
+        A worker that reports failure quickly is not held up by another
+        worker that never reports at all - load() must wait on every
+        worker's ReportShardReady concurrently, not one at a time in
+        assignment order. If it waited sequentially on node-0 (which
+        never delivers) before ever checking node-1 (which fails fast),
+        this would take the full load_timeout_s instead of ~0.1s.
+        """
+        runner, result_store = make_runner(timeout_s=5.0)
+        mock_client = mock_worker_cls.return_value.__enter__.return_value
+
+        def deliver(request):
+            # node-0 (layer_start=0) never reports ready. node-1
+            # (layer_start=12) reports a failure almost immediately.
+            if request.layer_start == 12:
+
+                def report_late():
+                    PipelineCallbackServicer(result_store).ReportShardReady(
+                        make_shard_ready_request(
+                            model_name="mamba-130m",
+                            node_id="node-1",
+                            success=False,
+                            error_message="checkpoint fetch failed",
+                        ),
+                        MagicMock(),
+                    )
+
+                threading.Timer(0.05, report_late).start()
+            return inference_pb2.LoadShardResponse(success=True)
+
+        mock_client.load_shard.side_effect = deliver
+
+        start = time.monotonic()
+        with pytest.raises(PipelineError, match="checkpoint fetch failed"):
+            runner.load()
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 1.0, (
+            f"load() took {elapsed:.2f}s - looks like it waited on node-0 "
+            "before ever checking node-1's already-known failure"
+        )
 
 
 # ---------------------------------------------------------------------------

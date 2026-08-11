@@ -1,28 +1,36 @@
 """
 Integration tests for the inference gRPC flow.
 
-These tests spin up a real gRPC server with InferenceServiceServicer,
-load the actual Mamba-130M model via gRPC, run inference, and verify
-results. Marked @pytest.mark.slow because they download and load
-the real model.
+These tests spin up real gRPC servers with InferenceServiceServicer and
+drive the LoadShard/RunShard/UnloadShard cycle. Both classes are marked
+@pytest.mark.slow.
 
-TestCachedGenerationRoundtrip below is the exception: it uses the
-tiny, local, random-weight dummy-mamba-tiny checkpoint (see
-scripts/make_dummy_manifest.py) over a real two-node gRPC pipeline,
-so it stays in the fast suite - no model download, no @pytest.mark.slow.
+TestInferenceRoundtrip loads a real mamba-130m from HuggingFace over
+the raw single-node RPC layer - this is the project's check that the
+actual HuggingFace download/load path works end to end, not just the
+plumbing around it (dummy-mamba-tiny is loaded from a local path, so it
+never exercises that code path at all).
+
+TestCachedGenerationRoundtrip uses the tiny, local, random-weight
+dummy-mamba-tiny checkpoint (see scripts/make_dummy_manifest.py) over a
+real two-node gRPC pipeline.
 """
 
+import time
 from concurrent import futures
 
 import grpc
 import pytest
 import torch
+from transformers import AutoConfig
 
 from proto.generated import inference_pb2
 from proto.generated import inference_pb2_grpc
 from inference.manifest import ModelManifest
 from inference.service import InferenceServiceServicer
+from inference.shard import MambaShardModule
 from inference.tensor_utils import serialize_tensor
+from inference.weights import read_checkpoint_metadata
 from orchestrator.dispatch import DispatchPlan, ShardAssignment
 from orchestrator.model_store import ModelStore
 from orchestrator.pipeline import PipelineCallbackServicer, PipelineRunner
@@ -53,59 +61,126 @@ def inference_server_and_channel():
     server.stop(grace=0)
 
 
-def load_model_via_grpc(stub):
+def build_load_request(
+    model_name, checkpoint="state-spaces/mamba-130m-hf", arch="mamba"
+):
     """
-    Load Mamba-130M via the gRPC LoadShard RPC.
+    Build a real single-shard LoadShardRequest covering the whole model.
+
+    Resolves tensor_locations against the checkpoint's actual
+    safetensors header - the same shape PipelineRunner would send.
+    Built directly here (not via ModelStore) since these tests exercise
+    the raw InferenceService RPC layer without a dispatch plan.
 
     Parameters
     ----------
-    stub : inference_pb2_grpc.InferenceServiceStub
-        The gRPC stub.
+    model_name : str
+        Name to register the loaded shard under.
+    checkpoint : str
+        HuggingFace repo id or local path.
+    arch : str
+        Architecture string.
 
     Returns
     -------
-    inference_pb2.LoadShardResponse
-        The load response.
+    inference_pb2.LoadShardRequest
+        A request covering layers [0, total_layers) as a single,
+        is_first=True, is_last=True shard.
     """
-    return stub.LoadShard(
-        inference_pb2.LoadShardRequest(
-            model_name="mamba-130m",
-            checkpoint="state-spaces/mamba-130m-hf",
-            tokenizer="EleutherAI/gpt-neox-20b",
-            arch="mamba",
-            layer_start=0,
-            layer_end=0,
-        )
+    config = AutoConfig.from_pretrained(checkpoint)
+    weight_map = read_checkpoint_metadata(checkpoint).weight_map
+    total_layers = config.num_hidden_layers
+    locations = MambaShardModule.tensor_locations_for_range(
+        weight_map, layer_start=0, layer_end=total_layers, is_first=True, is_last=True
     )
+    return inference_pb2.LoadShardRequest(
+        model_name=model_name,
+        checkpoint=checkpoint,
+        arch=arch,
+        layer_start=0,
+        layer_end=total_layers,
+        total_layers=total_layers,
+        tensor_locations=[
+            inference_pb2.TensorLocation(
+                dest_name=location.dest_name,
+                source_name=location.source_name,
+                source_file=location.source_file,
+            )
+            for location in locations
+        ],
+        model_config_json=config.to_json_string().encode(),
+    )
+
+
+def wait_for_model_loaded(servicer, model_name, timeout_s=60.0):
+    """
+    Block until model_name appears in the servicer's resident models.
+
+    LoadShard is asynchronous - it returns as soon as the request is
+    accepted, before the background load finishes. Tests that talk to
+    InferenceServiceServicer directly (no orchestrator/PipelineRunner
+    to wait on ReportShardReady for them) poll the servicer's own state
+    instead.
+
+    Parameters
+    ----------
+    servicer : InferenceServiceServicer
+        The servicer whose _models dict to poll.
+    model_name : str
+        The model name to wait for.
+    timeout_s : float
+        Maximum seconds to wait.
+
+    Raises
+    ------
+    TimeoutError
+        If the model doesn't appear within timeout_s.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if model_name in servicer._models:
+            return
+        time.sleep(0.1)
+    raise TimeoutError(f"'{model_name}' did not finish loading within {timeout_s}s")
 
 
 @pytest.mark.slow
 class TestInferenceRoundtrip:
     """
-    Tests the full load-run-unload cycle over real gRPC.
+    Tests the full load-run-unload cycle over real gRPC, against a real
+    mamba-130m downloaded from HuggingFace - the project's check that
+    the actual HF download/load path works, not just the local-path
+    plumbing dummy-mamba-tiny exercises.
     """
 
     def test_load_and_run(self, inference_server_and_channel):
         """
         Load the model, run inference, and get non-empty output.
         """
-        _, channel, _ = inference_server_and_channel
+        _, channel, servicer = inference_server_and_channel
         stub = inference_pb2_grpc.InferenceServiceStub(channel)
 
-        load_resp = load_model_via_grpc(stub)
+        load_resp = stub.LoadShard(build_load_request("mamba-130m"))
         assert load_resp.success is True
+        wait_for_model_loaded(servicer, "mamba-130m")
 
         input_ids = torch.tensor([[12764, 849, 403, 368, 2509, 32]], dtype=torch.int64)
         data, shape, dtype_str = serialize_tensor(input_ids)
 
+        # Plain forward pass, not generate_mode=True: handle.model is a
+        # MambaShardModule (even a single-node "shard" covering the whole
+        # model), which has no .generate() method. Real autoregressive
+        # generation goes through PipelineRunner's cache-based pipeline-
+        # mode RunShard calls instead (see TestCachedGenerationRoundtrip
+        # below) - this test only needs to prove the raw LoadShard ->
+        # RunShard cycle works against a real downloaded checkpoint.
         run_resp = stub.RunShard(
             inference_pb2.RunShardRequest(
                 model_name="mamba-130m",
                 input_tensor=data,
                 input_shape=shape,
                 input_dtype=dtype_str,
-                max_new_tokens=10,
-                generate_mode=True,
+                generate_mode=False,
             )
         )
 
@@ -145,14 +220,8 @@ class TestInferenceRoundtrip:
         stub = inference_pb2_grpc.InferenceServiceStub(channel)
 
         if "unload-test-model" not in servicer._models:
-            stub.LoadShard(
-                inference_pb2.LoadShardRequest(
-                    model_name="unload-test-model",
-                    checkpoint="state-spaces/mamba-130m-hf",
-                    tokenizer="EleutherAI/gpt-neox-20b",
-                    arch="mamba",
-                )
-            )
+            stub.LoadShard(build_load_request("unload-test-model"))
+            wait_for_model_loaded(servicer, "unload-test-model")
 
         resp = stub.UnloadShard(
             inference_pb2.UnloadShardRequest(model_name="unload-test-model")
@@ -174,16 +243,23 @@ DUMMY_MANIFEST = ModelManifest(
 )
 
 
-def _start_worker():
+def _start_worker(node_id: str = ""):
     """
     Start an in-process gRPC server hosting a real InferenceServiceServicer.
+
+    Parameters
+    ----------
+    node_id : str
+        The worker's node ID. Must match the node_id this worker is
+        assigned in the DispatchPlan so its ReportShardReady calls
+        resolve the slot PipelineRunner.load() is actually waiting on.
 
     Returns
     -------
     tuple[grpc.Server, int]
         The running server and the port it bound to.
     """
-    servicer = InferenceServiceServicer()
+    servicer = InferenceServiceServicer(node_id=node_id)
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=4), options=_CHANNEL_OPTIONS
     )
@@ -259,10 +335,12 @@ def _make_two_node_dispatch_plan(port0: int, port1: int) -> DispatchPlan:
         ],
         arch="mamba",
         model_name="dummy-mamba-tiny",
+        checkpoint=DUMMY_MANIFEST.checkpoint,
         total_layers=4,
     )
 
 
+@pytest.mark.slow
 class TestCachedGenerationRoundtrip:
     """
     Verifies recurrent-state caching over a real two-node gRPC pipeline.
@@ -290,8 +368,8 @@ class TestCachedGenerationRoundtrip:
         callback_server = None
         model_store = None
         try:
-            port0_server, port0 = _start_worker()
-            port1_server, port1 = _start_worker()
+            port0_server, port0 = _start_worker("node-0")
+            port1_server, port1 = _start_worker("node-1")
             worker_servers.extend([port0_server, port1_server])
             callback_server, callback_port = _start_callback_server(result_store)
 

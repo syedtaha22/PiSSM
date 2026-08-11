@@ -188,3 +188,23 @@ class TestUnloadModel:
 
         assert handle.model is None
         assert handle.tokenizer is None
+
+    def test_unload_reports_the_handles_own_memory_mb(self):
+        """
+        The freed amount is the handle's already-known memory_mb, not
+        a live RSS measurement - freeing Python references doesn't
+        guarantee the allocator returns pages to the OS immediately,
+        so an RSS delta can't be trusted to reflect what was freed.
+        """
+        from inference.loader import ModelHandle, unload_model
+
+        handle = ModelHandle(
+            name="test",
+            model=MagicMock(),
+            tokenizer=MagicMock(),
+            manifest=make_manifest(),
+            memory_mb=260,
+            loaded_at=0.0,
+        )
+
+        assert unload_model(handle) == 260
