@@ -14,6 +14,7 @@ real dispatch/load/infer plumbing, not model quality.
 from concurrent import futures
 
 import grpc
+import pytest
 from fastapi.testclient import TestClient
 
 from inference.service import InferenceServiceServicer
@@ -34,16 +35,23 @@ tokenizer: EleutherAI/gpt-neox-20b
 """
 
 
-def _start_inference_worker():
+def _start_inference_worker(node_id: str):
     """
     Start an in-process gRPC server hosting a real InferenceServiceServicer.
+
+    Parameters
+    ----------
+    node_id : str
+        The worker's node ID. Must match the node_id this worker is
+        registered under so its ReportShardReady calls resolve the
+        slot PipelineRunner.load() is actually waiting on.
 
     Returns
     -------
     tuple[grpc.Server, int]
         The running server and the port it bound to.
     """
-    servicer = InferenceServiceServicer()
+    servicer = InferenceServiceServicer(node_id=node_id)
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=4), options=_CHANNEL_OPTIONS
     )
@@ -77,6 +85,7 @@ def _start_callback_server(result_store):
     return server, port
 
 
+@pytest.mark.slow
 class TestHttpInferenceFlow:
     """
     End-to-end test of POST /models -> POST /infer over a real
@@ -92,10 +101,11 @@ class TestHttpInferenceFlow:
         callback_server = None
         try:
             for i in range(2):
-                server, port = _start_inference_worker()
+                node_id = f"node-{i}"
+                server, port = _start_inference_worker(node_id)
                 worker_servers.append(server)
                 registry.update_node(
-                    node_id=f"node-{i}",
+                    node_id=node_id,
                     ip_address="localhost",
                     available_ram_mb=3800,
                     total_ram_mb=4096,

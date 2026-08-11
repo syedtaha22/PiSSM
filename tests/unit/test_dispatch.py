@@ -50,7 +50,9 @@ def make_registry(*nodes):
     return registry
 
 
-def make_manifest(layers=24, arch="mamba", name="mamba-130m"):
+def make_manifest(
+    layers=24, arch="mamba", name="mamba-130m", checkpoint="state-spaces/mamba-130m-hf"
+):
     """
     Build a mock manifest with the given attributes.
 
@@ -62,16 +64,19 @@ def make_manifest(layers=24, arch="mamba", name="mamba-130m"):
         Model architecture string.
     name : str
         Model name.
+    checkpoint : str
+        HuggingFace repo id or local path to the checkpoint.
 
     Returns
     -------
     MagicMock
-        Mock with layers, arch, and name attributes set.
+        Mock with layers, arch, name, and checkpoint attributes set.
     """
     manifest = MagicMock()
     manifest.layers = layers
     manifest.arch = arch
     manifest.name = name
+    manifest.checkpoint = checkpoint
     return manifest
 
 
@@ -231,13 +236,21 @@ class TestPlanDispatch:
 
     def test_plan_carries_manifest_metadata(self):
         """
-        DispatchPlan stores arch, model_name, and total_layers from the manifest.
+        DispatchPlan stores arch, model_name, checkpoint, and
+        total_layers from the manifest.
         """
         registry = make_registry(("node-0", "192.168.1.10", 50052))
         plan = plan_dispatch(
-            make_manifest(layers=24, arch="mamba", name="mamba-130m"), registry
+            make_manifest(
+                layers=24,
+                arch="mamba",
+                name="mamba-130m",
+                checkpoint="state-spaces/mamba-130m-hf",
+            ),
+            registry,
         )
 
         assert plan.arch == "mamba"
         assert plan.model_name == "mamba-130m"
         assert plan.total_layers == 24
+        assert plan.checkpoint == "state-spaces/mamba-130m-hf"

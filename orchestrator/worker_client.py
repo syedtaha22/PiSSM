@@ -7,11 +7,11 @@ use it to forward RunShard to the next node in the circular pipeline.
 
 PipelineCallbackClient wraps the PipelineCallbackService stub. The last
 worker in a pipeline uses it to deliver inference results directly back
-to the orchestrator without routing through intermediate nodes.
+to the orchestrator without routing through intermediate nodes. Every
+worker uses it to report a LoadShard outcome via ReportShardReady once
+its background load finishes.
 
-Both clients configure their channels with a 512 MB message size limit
-to accommodate shard weight bytes in LoadShard and large activation
-tensors between nodes.
+Both clients configure their channels with a 64 MB message size limit.
 """
 
 import grpc
@@ -21,7 +21,7 @@ from proto.generated.inference_pb2_grpc import (
     PipelineCallbackServiceStub,
 )
 
-_MAX_MESSAGE_BYTES = 512 * 1024 * 1024
+_MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 
 _CHANNEL_OPTIONS = [
     ("grpc.max_send_message_length", _MAX_MESSAGE_BYTES),
@@ -164,3 +164,28 @@ class PipelineCallbackClient:
             Acknowledgement from the orchestrator.
         """
         return self._stub.DeliverResult(request)
+
+    def report_shard_ready(self, request, timeout_s: float = 10.0):
+        """
+        Call ReportShardReady on the orchestrator.
+
+        This runs on a worker's background load thread, with nothing
+        else supervising it - an explicit timeout is required so a
+        slow-to-resolve or unreachable orchestrator address can never
+        block that thread forever.
+
+        Parameters
+        ----------
+        request : inference_pb2.ShardReadyRequest
+            Carries the outcome of a worker's background LoadShard
+            download-and-build: success/failure, error message, memory
+            used, and layers loaded.
+        timeout_s : float
+            Maximum seconds to wait for the call to complete.
+
+        Returns
+        -------
+        inference_pb2.ShardReadyResponse
+            Acknowledgement from the orchestrator.
+        """
+        return self._stub.ReportShardReady(request, timeout=timeout_s)

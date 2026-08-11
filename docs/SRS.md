@@ -1,7 +1,7 @@
 # Software Requirements Specification
 ## Distributed SSM Inference System on Raspberry Pi Cluster
 
-**Version:** 0.1  
+**Version:** 0.2  
 **Status:** Draft  
 
 ---
@@ -141,6 +141,8 @@ The user provides the manifest and checkpoint. The system handles everything els
 
 - **FR-DE-04:** The topology shall be inspectable and manually overridable via `vim topology.yaml` (TUI) or the topology editor (WebUI).
 
+- **FR-DE-05:** The orchestrator shall compute shard assignments from a checkpoint's header/index metadata (tensor names, shapes, and source files). Each worker shall fetch only the weight data for the tensors its own assignment owns.
+
 ### 3.4 Inference Execution
 
 - **FR-IE-01:** The system shall accept user input appropriate to the model's `input_type` (text prompt, numeric array, or audio file path).
@@ -221,6 +223,8 @@ The user provides the manifest and checkpoint. The system handles everything els
 
 - **NFR-05 (Observability):** All inter-node gRPC calls shall be logged with timestamps. Logs shall be accessible from both the TUI and WebUI.
 
+- **NFR-06 (Scalability):** Orchestrator memory usage while dispatching a model shall not scale with that model's size - only with the number of tensors and workers involved. A model too large to fit in a single node's RAM shall still be dispatchable, provided each individual shard fits its assigned node.
+
 ---
 
 ## 5. System Interfaces
@@ -268,3 +272,9 @@ TinyLlama/Phi-2 inference (subject to memory), int8 quantization, dynamic dispat
 - Multi-cluster or WAN deployment
 - Model fine-tuning or weight modification
 - Authentication or access control (single-user local network assumed)
+
+---
+
+## 8. Changelog
+
+- [2026-08-09] - Added FR-DE-05 (metadata-only shard planning) and NFR-06 (Scalability). Reason: formalizes the fix for two production bugs (orchestrator memory exhaustion and oversized gRPC messages during model load) as requirements, so they can't regress unnoticed.

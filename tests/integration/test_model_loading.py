@@ -15,6 +15,7 @@ import torch
 from inference.manifest import load_manifest
 from inference.loader import generate, load_model, tokenize, unload_model
 from inference.shard import MambaShardModule
+from inference.weights import read_checkpoint_metadata
 
 MANIFEST_PATH = "manifests/mamba-130m.yaml"
 REFERENCE_PROMPT = "Hey how are you doing?"
@@ -72,8 +73,6 @@ class TestEndToEndInference:
         Tokenizing a string returns input_ids and attention_mask,
         both 2D int64 tensors.
         """
-        import torch
-
         ids, mask = tokenize(model_handle, REFERENCE_PROMPT)
         assert ids.dim() == 2
         assert ids.shape[0] == 1
@@ -130,42 +129,46 @@ class TestEndToEndInference:
 @pytest.mark.slow
 class TestShardRoundtrip:
     """
-    Tests that shard extraction and reconstruction preserve model output.
+    Tests that metadata-driven shard construction preserves model output.
 
-    Extracts two shards from a loaded Mamba-130M, reconstructs each from
-    bytes, and verifies that running them in sequence produces the same
-    logits as a forward pass through the full model.
+    Resolves two shards' tensor locations against Mamba-130M's real
+    checkpoint metadata, builds each directly via from_tensor_locations,
+    and verifies that running them in sequence produces the same logits
+    as a forward pass through the full model. This is
+    ModelStore/PipelineRunner's real orchestrator->worker path end to
+    end, minus gRPC transport.
     """
 
     def test_two_shard_roundtrip_matches_full_model(self, model_handle):
         """
-        Extracting two shards, serializing, reconstructing, and running
-        them in pipeline order produces logits matching the full model.
+        Resolving tensor locations, building each shard via
+        from_tensor_locations, and running them in pipeline order
+        produces logits matching the full model.
         """
-        import io
-
         model = model_handle.model
+        checkpoint = model_handle.manifest.checkpoint
+        config = model.config
         total_layers = len(model.backbone.layers)
         mid = total_layers // 2
 
-        shard0 = MambaShardModule.from_model(
-            model, 0, mid, is_first=True, is_last=False
-        )
-        shard1 = MambaShardModule.from_model(
-            model, mid, total_layers, is_first=False, is_last=True
-        )
+        weight_map = read_checkpoint_metadata(checkpoint).weight_map
 
-        def roundtrip(shard, layer_start, layer_end, is_first, is_last):
-            buf = io.BytesIO()
-            torch.save(shard.state_dict(), buf)
-            weights_bytes = buf.getvalue()
-            config_json = model.config.to_json_string().encode()
-            return MambaShardModule.from_bytes(
-                weights_bytes, config_json, layer_start, layer_end, is_first, is_last
+        def build_shard(layer_start, layer_end, is_first, is_last):
+            locations = MambaShardModule.tensor_locations_for_range(
+                weight_map, layer_start, layer_end, is_first, is_last
+            )
+            return MambaShardModule.from_tensor_locations(
+                config,
+                layer_start,
+                layer_end,
+                is_first,
+                is_last,
+                checkpoint,
+                locations,
             )
 
-        reconstructed0 = roundtrip(shard0, 0, mid, True, False)
-        reconstructed1 = roundtrip(shard1, mid, total_layers, False, True)
+        reconstructed0 = build_shard(0, mid, True, False)
+        reconstructed1 = build_shard(mid, total_layers, False, True)
 
         reconstructed0.eval()
         reconstructed1.eval()

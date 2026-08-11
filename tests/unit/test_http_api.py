@@ -613,6 +613,114 @@ class TestPostModelLoad:
         assert status["status"] == "error"
         assert "no available" in status["error"]
 
+    def test_reports_ready_logs_load_duration(
+        self, fastapi_test_client, model_registry, caplog
+    ):
+        """
+        A successful load logs one INFO line confirming completion and
+        how long it took, since progress bars clear themselves and
+        leave no other persistent record of a successful load.
+        """
+        _registered_manifest(model_registry)
+        fake_plan, fake_tokenizer, fake_runner = _fake_pipeline_session()
+
+        with (
+            patch("orchestrator.http_api.plan_dispatch", return_value=fake_plan),
+            patch("orchestrator.http_api.ModelStore"),
+            patch("orchestrator.http_api.PipelineRunner", return_value=fake_runner),
+            patch(
+                "orchestrator.http_api.AutoTokenizer.from_pretrained",
+                return_value=fake_tokenizer,
+            ),
+            caplog.at_level("INFO", logger="orchestrator.http_api"),
+        ):
+            fastapi_test_client.post("/models/mamba-130m/load")
+            _wait_for_terminal_status(fastapi_test_client, "mamba-130m")
+
+        assert any(
+            "mamba-130m" in record.message and "loaded in" in record.message
+            for record in caplog.records
+        )
+
+    def test_load_failure_logs_one_compact_line(
+        self, fastapi_test_client, model_registry, caplog
+    ):
+        """
+        A load failure logs one compact line, not a full traceback -
+        logger.exception's multi-line dump is unreadable at the volume
+        real Pi-cluster load failures produce.
+        """
+        _registered_manifest(model_registry)
+        fake_plan, fake_tokenizer, fake_runner = _fake_pipeline_session()
+        fake_runner.load.side_effect = RuntimeError("disk full")
+
+        with (
+            patch("orchestrator.http_api.plan_dispatch", return_value=fake_plan),
+            patch("orchestrator.http_api.ModelStore"),
+            patch("orchestrator.http_api.PipelineRunner", return_value=fake_runner),
+            patch(
+                "orchestrator.http_api.AutoTokenizer.from_pretrained",
+                return_value=fake_tokenizer,
+            ),
+            caplog.at_level("INFO", logger="orchestrator.http_api"),
+        ):
+            fastapi_test_client.post("/models/mamba-130m/load")
+            status = _wait_for_terminal_status(fastapi_test_client, "mamba-130m")
+
+        assert status["status"] == "error"
+        failure_records = [r for r in caplog.records if "Failed to load" in r.message]
+        assert len(failure_records) == 1
+        assert failure_records[0].exc_info is None
+        assert "disk full" in failure_records[0].message
+
+    def test_loading_a_new_model_unloads_the_current_one(
+        self, fastapi_test_client, model_registry
+    ):
+        """
+        The cluster runs one model at a time: loading a new model
+        unloads whichever one is currently resident first.
+        """
+        _registered_manifest(model_registry)
+        other_manifest = ModelManifest(
+            name="mamba-370m",
+            arch="mamba",
+            checkpoint="state-spaces/mamba-370m-hf",
+            layers=48,
+            hidden_dim=1024,
+            state_dim=16,
+            input_type="text",
+            tokenizer="EleutherAI/gpt-neox-20b",
+        )
+        model_registry.register(other_manifest)
+
+        fake_plan, fake_tokenizer, fake_runner = _fake_pipeline_session()
+        other_plan, other_tokenizer, other_runner = _fake_pipeline_session()
+
+        with (
+            patch(
+                "orchestrator.http_api.plan_dispatch",
+                side_effect=[fake_plan, other_plan],
+            ),
+            patch("orchestrator.http_api.ModelStore"),
+            patch(
+                "orchestrator.http_api.PipelineRunner",
+                side_effect=[fake_runner, other_runner],
+            ),
+            patch(
+                "orchestrator.http_api.AutoTokenizer.from_pretrained",
+                side_effect=[fake_tokenizer, other_tokenizer],
+            ),
+        ):
+            fastapi_test_client.post("/models/mamba-130m/load")
+            _wait_for_terminal_status(fastapi_test_client, "mamba-130m")
+
+            fastapi_test_client.post("/models/mamba-370m/load")
+            _wait_for_terminal_status(fastapi_test_client, "mamba-370m")
+
+        fake_runner.unload.assert_called_once()
+        status = fastapi_test_client.get("/models/mamba-130m/status").json()
+        assert status["status"] == "not_loaded"
+
     def test_second_call_does_not_reload(self, fastapi_test_client, model_registry):
         """
         Calling load twice while already loading/loaded only dispatches once.
