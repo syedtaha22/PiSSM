@@ -11,7 +11,7 @@ to the orchestrator without routing through intermediate nodes. Every
 worker uses it to report a LoadShard outcome via ReportShardReady once
 its background load finishes.
 
-Both clients configure their channels with a 64 MB message size limit.
+Both clients configure their channels with a 256 MB message size limit.
 """
 
 import grpc
@@ -21,7 +21,7 @@ from proto.generated.inference_pb2_grpc import (
     PipelineCallbackServiceStub,
 )
 
-_MAX_MESSAGE_BYTES = 64 * 1024 * 1024
+_MAX_MESSAGE_BYTES = 256 * 1024 * 1024
 
 _CHANNEL_OPTIONS = [
     ("grpc.max_send_message_length", _MAX_MESSAGE_BYTES),
