@@ -397,7 +397,6 @@ def main():
     def handle_signal(signum, frame):
         stop_event.set()
 
-    signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
     logger.info("NodeService on port %d", args.port)
@@ -423,10 +422,7 @@ def main():
 
         logger.info("Loading model '%s'...", manifest.name)
         model_store.load(manifest)
-        logger.info(
-            "Model loaded (~%d MB). Distributing shards...",
-            model_store._handle.memory_mb,
-        )
+        logger.info("Model metadata loaded. Distributing shards...")
 
         runner = PipelineRunner(
             model_store=model_store,
@@ -526,6 +522,9 @@ def main():
                 writer.writeheader()
                 writer.writerows(results)
             logger.info("Results written to %s", args.output)
+
+    except KeyboardInterrupt:
+        logger.info("Interrupted, shutting down...")
 
     finally:
         stop_event.set()
