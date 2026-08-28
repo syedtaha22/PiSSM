@@ -10,6 +10,7 @@ import {
   CartesianGrid,
   Tooltip,
 } from 'recharts'
+import { chartAxisStyle, chartGridStroke, chartLineStroke } from '@/lib/chart-theme'
 
 export interface MetricPoint {
   timestamp: number
@@ -41,7 +42,7 @@ function ChartTooltip({
   if (!active || !payload || !payload.length) return null
   const point = payload[0].payload
   return (
-    <div className="rounded border border-border bg-popover px-3 py-2 text-xs shadow-md font-sans">
+    <div className="rounded-sm border border-border bg-popover px-3 py-2 text-xs shadow-md font-sans">
       <div className="font-mono text-popover-foreground">
         {point.value.toFixed(1)}
         {unit}
@@ -69,7 +70,7 @@ export default function MetricChart({
 
   if (points.length === 0) {
     return (
-      <div className="h-full flex items-center justify-center text-sm text-muted-foreground border border-dashed border-border rounded">
+      <div className="h-full flex items-center justify-center rounded-md border border-dashed border-border px-6 text-center text-sm text-muted-foreground">
         {emptyMessage}
       </div>
     )
@@ -80,15 +81,15 @@ export default function MetricChart({
   return (
     <div className="h-full flex flex-col font-sans" aria-label={`${label} chart`}>
       <div className="flex justify-end shrink-0 mb-1">
-        <div className="inline-flex text-xs border border-border rounded overflow-hidden">
+        <div className="inline-flex text-xs border border-border rounded-sm overflow-hidden">
           {(['linear', 'log'] as const).map((s) => (
             <button
               key={s}
               onClick={() => setScale(s)}
-              className={`px-2 py-1 capitalize ${
+              className={`px-2 py-1 capitalize cursor-pointer transition-colors ${
                 scale === s
                   ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-muted'
+                  : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
               }`}
             >
               {s}
@@ -99,22 +100,20 @@ export default function MetricChart({
       <div className="flex-1 min-h-0">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={points} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
-            <CartesianGrid stroke="var(--border)" vertical={false} />
+            <CartesianGrid strokeDasharray="3 3" stroke={chartGridStroke} vertical={false} />
             <XAxis
               dataKey="timestamp"
               type="number"
               domain={['dataMin', 'dataMax']}
               tickFormatter={(v) => formatCompactTimestamp(v)}
-              tick={{ fontSize: 11, fill: 'var(--muted-foreground)', fontFamily: 'inherit' }}
-              stroke="var(--border)"
+              {...chartAxisStyle}
               minTickGap={48}
             />
             <YAxis
               scale={scale === 'log' ? 'log' : 'linear'}
               domain={scale === 'log' ? [positiveMin, 'auto'] : [0, 'auto']}
               allowDataOverflow={scale === 'log'}
-              tick={{ fontSize: 12, fill: 'var(--muted-foreground)', fontFamily: 'inherit' }}
-              stroke="var(--border)"
+              {...chartAxisStyle}
               width={56}
             />
             <Tooltip
@@ -129,9 +128,9 @@ export default function MetricChart({
               )}
             />
             <Line
-              type="linear"
+              type="monotone"
               dataKey="value"
-              stroke="var(--primary)"
+              stroke={chartLineStroke}
               strokeWidth={2}
               dot={{ r: 4, fill: 'var(--primary)', stroke: 'var(--background)', strokeWidth: 2 }}
               activeDot={{ r: 6 }}

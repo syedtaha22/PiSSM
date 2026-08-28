@@ -7,8 +7,9 @@
 setup-orch: setup
 	$(MAKE) dashboard
 
-setup: proto
+setup: 
 	pip install .
+	$(MAKE) proto
 
 proto:
 	bash scripts/generate_proto.sh

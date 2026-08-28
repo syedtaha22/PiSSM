@@ -8,7 +8,7 @@ import MetricsPanel from '@/components/metrics-panel'
 
 const POLL_INTERVAL_MS = 3000
 
-export default function Dashboard() {
+export default function Stats() {
   const [nodes, setNodes] = useState<NodeSummary[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -59,18 +59,20 @@ export default function Dashboard() {
   ]
 
   return (
-    <div className="p-8 h-full flex flex-col space-y-12">
+    <div className="mx-auto h-full w-full max-w-[1120px] flex flex-col space-y-12 p-8">
       {/* Stats */}
       <div className="grid grid-cols-3 gap-8 shrink-0">
         {stats.map((stat) => {
           const Icon = stat.icon
           return (
-            <div key={stat.label} className="space-y-2">
+            <div key={stat.label} className="flex flex-col items-center space-y-2 text-center">
               <div className="flex items-center gap-2 text-muted-foreground">
                 <Icon size={16} />
                 <span className="text-sm">{stat.label}</span>
               </div>
-              <div className="text-4xl font-light text-foreground">{stat.value}</div>
+              <div className="font-display text-4xl font-semibold tracking-tight text-foreground">
+                {stat.value}
+              </div>
             </div>
           )
         })}

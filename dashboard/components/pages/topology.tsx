@@ -159,7 +159,7 @@ function CallbackEdge({
             }px)`,
             pointerEvents: 'none',
           }}
-          className="text-[10px] text-muted-foreground bg-background/90 px-1 rounded whitespace-nowrap"
+          className="text-[10px] text-muted-foreground bg-background/90 px-1 rounded-sm whitespace-nowrap"
         >
           {data?.label}
         </div>
@@ -364,9 +364,11 @@ export default function Topology() {
   }, [nodes, assignments])
 
   return (
-    <div className="p-8 h-full flex flex-col">
+    <div className="mx-auto h-full w-full max-w-[1120px] flex flex-col p-8">
       <div className="mb-4 space-y-2">
-        <h2 className="text-2xl font-light text-foreground">Network Topology</h2>
+        <h2 className="font-display text-2xl font-semibold tracking-tight text-foreground">
+          Network Topology
+        </h2>
         <p className="text-sm text-muted-foreground">
           {modelName
             ? `Showing the active pipeline for "${modelName}"${
@@ -380,7 +382,7 @@ export default function Topology() {
 
       {/* Graph canvas - read-only reflection of the real cluster/pipeline */}
       <div
-        className="flex-1 border border-border rounded mb-6 bg-background/50 overflow-hidden"
+        className="flex-1 border border-border rounded-md mb-6 bg-background/50 overflow-hidden"
         style={{ minHeight: '400px' }}
       >
         <ReactFlow

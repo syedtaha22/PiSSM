@@ -62,7 +62,7 @@ describe('MetricsPanel', () => {
   it('switching to the Tokens/sec tab only plots entries with token counts', () => {
     const { container } = render(<MetricsPanel entries={ENTRIES} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Tokens/sec' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Tokens/sec' }))
 
     // All 3 entries pass the (no) filter, but only 2 have numTokens set -
     // the third (dummy-mamba-small) predates that field and must be

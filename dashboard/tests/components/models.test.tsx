@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import Models from '@/components/pages/models'
 import * as api from '@/lib/api'
@@ -12,6 +12,13 @@ const SAMPLE_MODEL = {
   state_dim: 8,
   input_type: 'text',
   tokenizer: 'EleutherAI/gpt-neox-20b',
+}
+
+const OTHER_MODEL = {
+  ...SAMPLE_MODEL,
+  name: 'mamba-130m',
+  arch: 'mamba',
+  checkpoint: 'checkpoints/mamba-130m',
 }
 
 describe('Models', () => {
@@ -32,5 +39,20 @@ describe('Models', () => {
     await waitFor(() =>
       expect(screen.getByText('orchestrator unreachable')).toBeInTheDocument()
     )
+  })
+
+  it('filters the model list by search query', async () => {
+    vi.spyOn(api, 'listModels').mockResolvedValue([SAMPLE_MODEL, OTHER_MODEL])
+
+    render(<Models />)
+
+    await waitFor(() => expect(screen.getByText('mamba-130m')).toBeInTheDocument())
+
+    fireEvent.change(screen.getByPlaceholderText('Search models...'), {
+      target: { value: '130m' },
+    })
+
+    expect(screen.getByText('mamba-130m')).toBeInTheDocument()
+    expect(screen.queryByText('dummy-mamba-tiny')).not.toBeInTheDocument()
   })
 })

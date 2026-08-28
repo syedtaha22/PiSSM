@@ -44,7 +44,7 @@ describe('Home (tab switching)', () => {
     // prompt input stays disabled - type isn't possible there, but we can
     // still prove state survives by checking the model selection itself
     // persists across a tab switch instead of resetting.
-    await user.click(screen.getByRole('button', { name: 'Dashboard' }))
+    await user.click(screen.getByRole('button', { name: 'Stats' }))
     expect(screen.getByText('Total Nodes')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Inference' }))
