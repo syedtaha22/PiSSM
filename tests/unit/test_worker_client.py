@@ -8,8 +8,8 @@ constructors to avoid real network connections.
 
 from unittest.mock import MagicMock, patch
 
-from proto.generated import inference_pb2
 from orchestrator.worker_client import PipelineCallbackClient, WorkerClient
+from proto.generated import inference_pb2
 
 _64MB = 64 * 1024 * 1024
 
@@ -81,9 +81,9 @@ class TestWorkerClient:
                 return_value=mock_channel,
             ),
             patch("orchestrator.worker_client.InferenceServiceStub"),
+            WorkerClient("localhost:50052"),
         ):
-            with WorkerClient("localhost:50052"):
-                pass
+            pass
 
         mock_channel.close.assert_called_once()
 

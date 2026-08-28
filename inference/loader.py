@@ -18,7 +18,6 @@ from typing import Any
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import torch
-
 import transformers
 
 transformers.logging.set_verbosity_error()
@@ -30,9 +29,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", message=".*unauthenticated requests.*")
 
-from transformers import AutoTokenizer, MambaForCausalLM  # noqa: E402
+from transformers import AutoTokenizer, MambaForCausalLM
 
-from inference.manifest import ModelManifest  # noqa: E402
+from inference.manifest import ModelManifest
 
 logger = logging.getLogger(__name__)
 

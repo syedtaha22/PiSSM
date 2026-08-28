@@ -15,10 +15,10 @@ from concurrent import futures
 
 import grpc
 
+from inference.service import InferenceServiceServicer
 from orchestrator.config import DEFAULT_HEARTBEAT_INTERVAL_S
 from orchestrator.worker_client import _CHANNEL_OPTIONS
 from proto.generated import inference_pb2_grpc
-from inference.service import InferenceServiceServicer
 from worker.heartbeat import HeartbeatClient
 from worker.system_info import get_node_id
 

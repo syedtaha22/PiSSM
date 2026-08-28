@@ -10,9 +10,8 @@ import logging
 
 import grpc
 
-from proto.generated import nodes_pb2
-from proto.generated import nodes_pb2_grpc
 from orchestrator.node_registry import NodeRegistry
+from proto.generated import nodes_pb2, nodes_pb2_grpc
 
 logger = logging.getLogger(__name__)
 

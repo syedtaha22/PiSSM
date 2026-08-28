@@ -143,7 +143,10 @@ class TestThreadSafety:
         def register_loop(name):
             try:
                 registry.register(make_manifest(name))
-            except Exception as exc:
+            # This is a thread target: an uncaught exception here would just
+            # kill the thread silently instead of failing the test's
+            # `errors == []` assertion.
+            except Exception as exc:  # noqa: BLE001
                 errors.append(exc)
 
         threads = [

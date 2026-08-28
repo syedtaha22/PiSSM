@@ -531,7 +531,9 @@ def main():
         if runner is not None:
             try:
                 runner.unload()
-            except Exception as e:
+            # Best-effort cleanup in a finally block: must not stop the
+            # remaining shutdown steps below.
+            except Exception as e:  # noqa: BLE001
                 logger.warning("Unload failed: %s", e)
         model_store.unload()
         node_server.stop(grace=2)

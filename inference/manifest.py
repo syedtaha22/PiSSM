@@ -31,8 +31,6 @@ class ManifestError(Exception):
     Raised when a model manifest is invalid or cannot be loaded.
     """
 
-    pass
-
 
 @dataclass(frozen=True)
 class ModelManifest:

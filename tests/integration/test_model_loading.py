@@ -12,8 +12,8 @@ import sys
 import pytest
 import torch
 
-from inference.manifest import load_manifest
 from inference.loader import generate, load_model, tokenize, unload_model
+from inference.manifest import load_manifest
 from inference.shard import MambaShardModule
 from inference.weights import read_checkpoint_metadata
 
@@ -116,6 +116,7 @@ class TestEndToEndInference:
             capture_output=True,
             text=True,
             timeout=120,
+            check=False,
         )
         assert result.returncode == 0
         warning_lines = [

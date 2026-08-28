@@ -13,9 +13,9 @@ from concurrent import futures
 
 import grpc
 
-from proto.generated import nodes_pb2_grpc
 from orchestrator.node_registry import NodeRegistry
 from orchestrator.service import NodeServiceServicer
+from proto.generated import nodes_pb2_grpc
 from worker.heartbeat import HeartbeatClient
 
 TEST_INTERVAL_S = 0.2

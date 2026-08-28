@@ -14,12 +14,12 @@ import grpc
 import pytest
 from fastapi.testclient import TestClient
 
-from proto.generated import nodes_pb2_grpc
 from inference.model_registry import ModelRegistry
 from orchestrator.http_api import create_app
 from orchestrator.node_registry import NodeRegistry
 from orchestrator.pipeline import ResultStore
 from orchestrator.service import NodeServiceServicer
+from proto.generated import nodes_pb2_grpc
 
 
 @pytest.fixture

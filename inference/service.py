@@ -16,11 +16,10 @@ import httpx
 import psutil
 import torch
 
-from proto.generated import inference_pb2
-from proto.generated import inference_pb2_grpc
 from inference.loader import ModelHandle, load_shard_from_metadata, unload_model
 from inference.tensor_utils import deserialize_tensor, serialize_tensor
 from orchestrator.worker_client import PipelineCallbackClient, WorkerClient
+from proto.generated import inference_pb2, inference_pb2_grpc
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +174,8 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
                 layers_loaded=request.layer_end - request.layer_start,
             )
 
-        except Exception as e:
+        # Reported to the orchestrator via callback below, not re-raised.
+        except Exception as e:  # noqa: BLE001
             with self._lock:
                 self._loading.discard(request.model_name)
             error_message = _format_error(e)
@@ -374,7 +374,8 @@ class InferenceServiceServicer(inference_pb2_grpc.InferenceServiceServicer):
                 peak_memory_mb=peak_memory_mb,
             )
 
-        except Exception as e:
+        # Converted to a RunShardResponse(success=False) below, not re-raised.
+        except Exception as e:  # noqa: BLE001
             logger.error(
                 "Inference failed on '%s': %s", request.model_name, _format_error(e)
             )

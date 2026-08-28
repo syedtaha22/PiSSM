@@ -7,8 +7,7 @@ validates the full serialization/deserialization path that unit
 tests with mock contexts do not cover.
 """
 
-from proto.generated import nodes_pb2
-from proto.generated import nodes_pb2_grpc
+from proto.generated import nodes_pb2, nodes_pb2_grpc
 
 
 def make_heartbeat_request(

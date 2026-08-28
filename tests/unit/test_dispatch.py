@@ -6,8 +6,9 @@ plan_dispatch (full shard assignment from a live NodeRegistry).
 Both functions are pure logic with no network or model I/O.
 """
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 from orchestrator.dispatch import (
     DispatchError,

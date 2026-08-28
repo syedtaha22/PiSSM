@@ -14,10 +14,10 @@ import httpx
 import torch
 from transformers import MambaConfig, MambaForCausalLM
 
-from proto.generated import inference_pb2
 from inference.loader import ModelHandle
 from inference.shard import MambaShardModule
 from inference.tensor_utils import deserialize_tensor, serialize_tensor
+from proto.generated import inference_pb2
 
 
 def make_load_request(

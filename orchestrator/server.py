@@ -18,7 +18,6 @@ from pathlib import Path
 import grpc
 import uvicorn
 
-from proto.generated import inference_pb2_grpc, nodes_pb2_grpc
 from inference.manifest import ManifestError, load_manifest
 from inference.model_registry import ModelRegistry
 from orchestrator.config import (
@@ -33,6 +32,7 @@ from orchestrator.node_registry import NodeRegistry
 from orchestrator.pipeline import PipelineCallbackServicer, ResultStore
 from orchestrator.service import NodeServiceServicer
 from orchestrator.worker_client import _CHANNEL_OPTIONS
+from proto.generated import inference_pb2_grpc, nodes_pb2_grpc
 from worker.system_info import get_ip_address
 
 logger = logging.getLogger(__name__)
@@ -242,7 +242,7 @@ def main():
         format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
     )
 
-    server, registry, model_registry, stop_event, _, app = create_server(
+    server, registry, _model_registry, stop_event, _, app = create_server(
         port=args.port,
         heartbeat_interval_s=args.heartbeat_interval,
         missed_threshold=args.missed_threshold,

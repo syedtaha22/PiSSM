@@ -10,8 +10,8 @@ import re
 from dataclasses import dataclass
 
 import torch
-import torch.nn as nn
 from safetensors import safe_open
+from torch import nn
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.models.mamba.modeling_mamba import MambaBlock, MambaRMSNorm
 

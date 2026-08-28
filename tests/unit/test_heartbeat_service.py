@@ -10,9 +10,9 @@ from unittest.mock import MagicMock
 
 import grpc
 
-from proto.generated import nodes_pb2
 from orchestrator.node_registry import NodeRegistry
 from orchestrator.service import NodeServiceServicer
+from proto.generated import nodes_pb2
 
 STATUS_MAP = {
     "available": nodes_pb2.AVAILABLE,

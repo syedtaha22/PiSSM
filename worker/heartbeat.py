@@ -7,21 +7,20 @@ gracefully by logging warnings and retrying on the next interval.
 """
 
 import logging
-import time
 import threading
+import time
 
 import grpc
 
-from proto.generated import nodes_pb2
-from proto.generated import nodes_pb2_grpc
+from proto.generated import nodes_pb2, nodes_pb2_grpc
 from worker.system_info import (
-    get_available_ram_mb,
-    get_total_ram_mb,
-    get_cpu_count,
     get_arch,
+    get_available_ram_mb,
+    get_cpu_count,
     get_ip_address,
     get_os_name,
     get_os_version,
+    get_total_ram_mb,
 )
 
 logger = logging.getLogger(__name__)

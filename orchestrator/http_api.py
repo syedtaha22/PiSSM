@@ -294,7 +294,10 @@ def create_app(
                     model_states[manifest.name] = _ModelState(
                         status="ready", plan=plan, session=session
                     )
-            except Exception as err:
+            # This is a daemon thread's target function: an uncaught exception
+            # here would leave model_states stuck at "loading" forever instead
+            # of recording the error.
+            except Exception as err:  # noqa: BLE001
                 logger.error(
                     "Failed to load model '%s': %s", manifest.name, _format_error(err)
                 )
@@ -399,7 +402,10 @@ def create_app(
                     step.token_id[0], skip_special_tokens=True
                 )
                 yield json.dumps({"token": token_text, "done": False}) + "\n"
-        except Exception as err:
+        # The HTTP status already committed to 200 before this generator's
+        # first item, so any error from here on has to be reported inline in
+        # the stream, not raised.
+        except Exception as err:  # noqa: BLE001
             yield json.dumps({"done": True, "error": str(err)}) + "\n"
             return
 

@@ -6,8 +6,8 @@ failure detection by reaping nodes that miss consecutive heartbeats,
 and auto-rejoin when a previously unavailable node resumes heartbeats.
 """
 
-import time
 import threading
+import time
 from dataclasses import dataclass
 
 from orchestrator.config import (
@@ -197,8 +197,10 @@ class NodeRegistry:
         reaped = []
         with self._lock:
             for node in self._nodes.values():
-                if node.status in ("available", "busy"):
-                    if now - node.last_heartbeat > self.timeout_s:
-                        node.status = "unavailable"
-                        reaped.append(node.node_id)
+                if (
+                    node.status in ("available", "busy")
+                    and now - node.last_heartbeat > self.timeout_s
+                ):
+                    node.status = "unavailable"
+                    reaped.append(node.node_id)
         return reaped

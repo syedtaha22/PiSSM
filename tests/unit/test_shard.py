@@ -8,7 +8,7 @@ so no real model weights are required.
 
 import pytest
 import torch
-import torch.nn as nn
+from torch import nn
 from transformers import AutoConfig, MambaConfig, MambaForCausalLM
 
 from inference.shard import MambaShardModule

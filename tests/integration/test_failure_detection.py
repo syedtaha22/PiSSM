@@ -7,18 +7,17 @@ nodes register, a node drops and is reaped, a node rejoins.
 Short intervals (0.1s heartbeat, 0.3s timeout) keep tests fast.
 """
 
+import threading
 import time
 from concurrent import futures
 
 import grpc
 
-from proto.generated import nodes_pb2_grpc
 from orchestrator.node_registry import NodeRegistry
-from orchestrator.service import NodeServiceServicer
 from orchestrator.server import run_reaper
+from orchestrator.service import NodeServiceServicer
+from proto.generated import nodes_pb2_grpc
 from worker.heartbeat import HeartbeatClient
-
-import threading
 
 HEARTBEAT_INTERVAL_S = 0.1
 MISSED_THRESHOLD = 3

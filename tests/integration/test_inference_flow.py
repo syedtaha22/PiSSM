@@ -24,8 +24,6 @@ import pytest
 import torch
 from transformers import AutoConfig
 
-from proto.generated import inference_pb2
-from proto.generated import inference_pb2_grpc
 from inference.manifest import ModelManifest
 from inference.service import InferenceServiceServicer
 from inference.shard import MambaShardModule
@@ -35,6 +33,7 @@ from orchestrator.dispatch import DispatchPlan, ShardAssignment
 from orchestrator.model_store import ModelStore
 from orchestrator.pipeline import PipelineCallbackServicer, PipelineRunner
 from orchestrator.worker_client import _CHANNEL_OPTIONS
+from proto.generated import inference_pb2, inference_pb2_grpc
 
 
 @pytest.fixture(scope="module")
