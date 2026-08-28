@@ -153,7 +153,7 @@ make proto  # runs: bash scripts/generate_proto.sh
 
 ```bash
 make test        # fast unit tests
-make test-slow   # tests that load a model (slow, RAM-heavy)
+make test-slow   # tests that load/run a model (slow, RAM-heavy)
 ```
 
 ### Format and Lint

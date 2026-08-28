@@ -2,15 +2,20 @@
 //
 // Defines the gRPC service and messages for model loading, inference
 // execution, and pipeline result delivery in PiSSM. The orchestrator
-// calls LoadShard to prepare workers with their assigned layer slice,
-// RunShard to trigger inference (fire-and-forward), and UnloadShard
-// to release memory. Tensors are serialized as raw bytes with shape
-// and dtype sent separately - no pickle.
+// calls LoadShard to tell workers which tensors their assigned layer
+// slice needs and where to fetch them from, RunShard to trigger
+// inference (fire-and-forward), and UnloadShard to release memory.
+// Activation tensors passed between shards during RunShard are
+// serialized as raw bytes with shape and dtype sent separately - no
+// pickle.
 //
 // The circular pipeline topology is: orchestrator fires RunShard at
 // the first worker; each non-last worker forwards activations to the
 // next; the last worker calls PipelineCallbackService.DeliverResult
-// directly back on the orchestrator.
+// directly back on the orchestrator. LoadShard follows the same
+// callback shape: it returns immediately, and each worker calls
+// PipelineCallbackService.ReportShardReady once its background
+// download-and-build finishes.
 
 syntax = "proto3";
 
@@ -22,11 +27,12 @@ package pissm;
 // next worker in the pipeline, and release memory. Workers also expose
 // Ping for network benchmarking.
 service InferenceService {
-  // Instructs a worker to load a model shard into memory. If
-  // shard_weights is non-empty, the worker reconstructs the shard
-  // from the provided bytes (no HuggingFace download). Otherwise
-  // falls back to loading from the checkpoint field (single-node
-  // backward compatibility). Holds the shard resident until
+  // Instructs a worker to load a model shard. tensor_locations names
+  // which tensors this shard owns and which checkpoint file each lives
+  // in. LoadShard returns as soon as the metadata is accepted - the
+  // worker fetches its files and materializes the shard on a
+  // background thread, then calls PipelineCallbackService.
+  // ReportShardReady with the outcome. Holds the shard resident until
   // UnloadShard is called.
   rpc LoadShard (LoadShardRequest) returns (LoadShardResponse);
 
@@ -58,6 +64,13 @@ service PipelineCallbackService {
   // Carries the final output tensor and the accumulated per-node timing
   // and memory data collected as the request traversed the pipeline.
   rpc DeliverResult (DeliverResultRequest) returns (DeliverResultResponse);
+
+  // Called by a worker once its background LoadShard download-and-build
+  // has finished, successfully or not. The orchestrator waits for this
+  // from every worker in a dispatch plan before treating the model as
+  // ready or sending the first RunShard, so no worker starts pipeline
+  // execution against a peer that hasn't finished loading.
+  rpc ReportShardReady (ShardReadyRequest) returns (ShardReadyResponse);
 }
 
 // Request to load a model shard into worker memory.
@@ -65,14 +78,10 @@ message LoadShardRequest {
   // The model's registered name from the manifest.
   string model_name = 1;
 
-  // HuggingFace model ID (e.g. "state-spaces/mamba-130m-hf") or
-  // local filesystem path to the checkpoint. Used only when
-  // shard_weights is empty (single-node backward compatibility).
+  // HuggingFace model ID (e.g. "state-spaces/mamba-130m-hf") or local
+  // filesystem path to the checkpoint. The worker resolves this itself
+  // to fetch the checkpoint file(s) named in tensor_locations.
   string checkpoint = 2;
-
-  // HuggingFace tokenizer ID (e.g. "EleutherAI/gpt-neox-20b") or
-  // local filesystem path to the tokenizer.
-  string tokenizer = 3;
 
   // First layer index assigned to this shard (inclusive).
   int32 layer_start = 4;
@@ -94,29 +103,73 @@ message LoadShardRequest {
   // or last (produces logits) in the pipeline.
   int32 total_layers = 8;
 
-  // Serialized shard weights: output of torch.save(shard.state_dict()).
-  // The orchestrator extracts and sends these so workers never download
-  // the full checkpoint directly. Empty when using the checkpoint field.
-  bytes shard_weights = 9;
+  // Every tensor this shard owns: its parameter name, where it lives
+  // in the checkpoint, and its shape/dtype. Computed by the
+  // orchestrator from the checkpoint's safetensors header/index. The
+  // worker uses this to know which checkpoint file(s) to fetch and
+  // which tensor to pull out of each for every parameter it needs to
+  // build.
+  repeated TensorLocation tensor_locations = 9;
 
   // HuggingFace model configuration JSON (config.to_json_string()).
-  // Workers use this to reconstruct the shard module architecture
-  // before loading the received state_dict. Empty when using checkpoint.
+  // Workers use this to construct the shard module's architecture
+  // (layer count, hidden size, etc.) directly for its layer range,
+  // before loading the tensors named in tensor_locations into it.
   bytes model_config_json = 10;
+
+  // Address of the orchestrator's PipelineCallbackService (host:port).
+  // The worker calls ReportShardReady here once its background
+  // download-and-build finishes, successfully or not.
+  string orchestrator_callback_address = 11;
 }
 
-// Response after loading a model shard.
+// Identifies a single tensor this shard needs and where to get it.
+message TensorLocation {
+  // The parameter name within the shard module, e.g. "lm_head.weight".
+  // Matches source_name except for tied weights (e.g. Mamba's
+  // lm_head, tied to the input embedding), where the shard has no
+  // storage of its own for dest_name and must load it from
+  // source_name's tensor instead.
+  string dest_name = 1;
+
+  // The tensor's name within the checkpoint's own weight map, e.g.
+  // "backbone.embeddings.weight". This is the key passed to
+  // safetensors' get_tensor() when reading source_file.
+  string source_name = 2;
+
+  // The checkpoint file this tensor lives in, e.g. "model.safetensors"
+  // or "model-00001-of-00002.safetensors". A shard's tensors may span
+  // multiple files; the worker fetches each distinct file only once.
+  string source_file = 3;
+
+  // The tensor's dtype as reported by the safetensors header, e.g.
+  // "F32". Informational - the worker infers dtype from the loaded
+  // tensor itself, not this field, but it's useful for debugging and
+  // for validating a fetched tensor matches what was planned.
+  string dtype = 4;
+
+  // The tensor's shape as reported by the safetensors header.
+  repeated int64 shape = 5;
+}
+
+// Response after accepting a LoadShard request.
 message LoadShardResponse {
-  // True if the shard was loaded successfully.
+  // True if the request was accepted and the background download-and-
+  // build started. Does NOT mean the shard has finished loading - that
+  // outcome arrives later via PipelineCallbackService.ReportShardReady.
+  // False only for a request rejected outright (e.g. a model of this
+  // name is already loaded or already loading).
   bool success = 1;
 
   // Error description if success is false, empty otherwise.
   string error_message = 2;
 
-  // Approximate memory consumed by the loaded shard in megabytes.
+  // Unused when success is true (the shard hasn't finished loading
+  // yet - see ShardReadyRequest for the real figures). Present for
+  // wire-format symmetry with ShardReadyRequest.
   uint32 memory_used_mb = 3;
 
-  // Number of model layers actually loaded.
+  // Unused when success is true, for the same reason as memory_used_mb.
   int32 layers_loaded = 4;
 }
 
@@ -266,5 +319,39 @@ message DeliverResultRequest {
 message DeliverResultResponse {
   // True if the orchestrator successfully matched the request_id and
   // stored the result.
+  bool acknowledged = 1;
+}
+
+// Sent by a worker to PipelineCallbackService.ReportShardReady once its
+// background LoadShard download-and-build has finished.
+message ShardReadyRequest {
+  // The model name from the LoadShardRequest that triggered this load.
+  string model_name = 1;
+
+  // This worker's node ID, so the orchestrator can tell which
+  // assignment in the dispatch plan this report corresponds to (several
+  // workers may be loading the same model_name concurrently).
+  string node_id = 2;
+
+  // True if the shard was built and loaded successfully.
+  bool success = 3;
+
+  // Error description if success is false, empty otherwise.
+  string error_message = 4;
+
+  // Approximate memory consumed by the loaded shard in megabytes.
+  // Meaningful only when success is true.
+  uint32 memory_used_mb = 5;
+
+  // Number of model layers actually loaded. Meaningful only when
+  // success is true.
+  int32 layers_loaded = 6;
+}
+
+// Acknowledgement returned by the orchestrator after receiving a
+// ShardReadyRequest.
+message ShardReadyResponse {
+  // True if the orchestrator successfully matched the model_name and
+  // node_id to a pending load and recorded the outcome.
   bool acknowledged = 1;
 }

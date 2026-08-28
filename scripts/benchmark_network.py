@@ -4,7 +4,8 @@ Network latency and throughput benchmark for PiSSM worker nodes.
 Sends Ping RPCs at several payload sizes to a running worker's
 InferenceService and records round-trip latency and throughput. Payload
 sizes span small control messages (0 B) up to large activation payloads
-(64 MB). Results are appended to benchmarks/network_baseline.csv.
+(just under the gRPC channel's message size cap). Results are written
+to benchmarks/network_baseline.csv, overwriting any previous run.
 
 The worker's InferenceService must be running before this script is
 started. Ping requires no model to be loaded; it echoes the payload
@@ -26,7 +27,7 @@ import time
 import grpc
 from tqdm import tqdm
 
-from orchestrator.worker_client import _CHANNEL_OPTIONS
+from orchestrator.worker_client import _CHANNEL_OPTIONS, _MAX_MESSAGE_BYTES
 from proto.generated import inference_pb2, inference_pb2_grpc
 
 logger = logging.getLogger(__name__)
@@ -35,13 +36,17 @@ DEFAULT_RUNS = 10
 DEFAULT_WARMUP = 3
 CSV_PATH = "benchmarks/network_baseline.csv"
 
+# The largest size stays under _MAX_MESSAGE_BYTES rather than at it -
+# the PingRequest wrapping the payload adds a few bytes of protobuf
+# framing, so a payload of exactly _MAX_MESSAGE_BYTES would exceed the
+# gRPC channel's configured max message size.
 PAYLOAD_SIZES = [
     0,
     1 * 1024,
     64 * 1024,
     1 * 1024 * 1024,
     16 * 1024 * 1024,
-    64 * 1024 * 1024,
+    _MAX_MESSAGE_BYTES // 2,
 ]
 
 CSV_COLUMNS = [
@@ -211,14 +216,12 @@ def main():
     channel.close()
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    file_exists = os.path.exists(args.output)
-    with open(args.output, "a", newline="") as f:
+    with open(args.output, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
-        if not file_exists:
-            writer.writeheader()
+        writer.writeheader()
         writer.writerows(results)
 
-    logger.info("Results appended to %s", args.output)
+    logger.info("Results written to %s", args.output)
 
 
 if __name__ == "__main__":

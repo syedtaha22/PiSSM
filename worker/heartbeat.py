@@ -177,9 +177,7 @@ class HeartbeatClient:
             except grpc.RpcError as e:
                 self._consecutive_failures += 1
                 if self._consecutive_failures == 1:
-                    logger.warning(
-                        "Heartbeat failed: %s: %s", e.code().name, e.details()
-                    )
+                    logger.warning("Heartbeat failed: %s", e.code().name)
                 else:
                     logger.debug(
                         "Heartbeat still failing (%d attempts): %s: %s",

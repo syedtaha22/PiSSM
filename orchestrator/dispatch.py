@@ -75,6 +75,10 @@ class DispatchPlan:
         Model architecture string from the manifest.
     model_name : str
         Model name from the manifest.
+    checkpoint : str
+        HuggingFace repo id or local filesystem path to the checkpoint,
+        from the manifest. Sent to every worker in LoadShardRequest so
+        each can resolve and fetch its own tensor source files.
     total_layers : int
         Total number of layers in the full model.
     """
@@ -82,6 +86,7 @@ class DispatchPlan:
     assignments: list
     arch: str
     model_name: str
+    checkpoint: str
     total_layers: int
 
 
@@ -181,5 +186,6 @@ def plan_dispatch(manifest, registry: NodeRegistry) -> DispatchPlan:
         assignments=assignments,
         arch=manifest.arch,
         model_name=manifest.name,
+        checkpoint=manifest.checkpoint,
         total_layers=manifest.layers,
     )

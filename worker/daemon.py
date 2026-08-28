@@ -80,7 +80,7 @@ def main():
         ip_address=args.ip,
     )
 
-    inference_servicer = InferenceServiceServicer()
+    inference_servicer = InferenceServiceServicer(node_id=node_id)
     inference_server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=4),
         options=_CHANNEL_OPTIONS,

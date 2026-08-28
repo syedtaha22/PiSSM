@@ -2,15 +2,19 @@
 Pipeline coordinator for circular pipeline-parallel inference.
 
 ResultStore holds per-request futures that the last worker resolves via
-DeliverResult. PipelineCallbackServicer is the gRPC handler that bridges
-the incoming DeliverResult RPC to the ResultStore. PipelineRunner
-orchestrates LoadShard, the initial RunShard fire-and-forward, and
-UnloadShard across all workers in a DispatchPlan.
+DeliverResult, and (under a "shard:{model_name}:{node_id}" namespaced
+key) per-shard load outcomes that a worker resolves via ReportShardReady.
+PipelineCallbackServicer is the gRPC handler that bridges both incoming
+RPCs to the ResultStore. PipelineRunner orchestrates LoadShard (dispatch
+metadata to every worker, then wait for every worker's ReportShardReady),
+the initial RunShard fire-and-forward, and UnloadShard across all
+workers in a DispatchPlan.
 """
 
 import logging
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 import grpc
@@ -22,6 +26,35 @@ from orchestrator.worker_client import WorkerClient
 from proto.generated import inference_pb2, inference_pb2_grpc
 
 logger = logging.getLogger(__name__)
+
+
+class PipelineError(Exception):
+    """
+    Raised when a worker rejects or fails a pipeline load/run request.
+    """
+
+
+@dataclass
+class ShardReadyResult:
+    """
+    Outcome of a single worker's background LoadShard download-and-build.
+
+    Parameters
+    ----------
+    success : bool
+        True if the shard was built and loaded successfully.
+    error_message : str
+        Error description if not success, empty otherwise.
+    memory_used_mb : int
+        Approximate memory consumed by the loaded shard.
+    layers_loaded : int
+        Number of model layers loaded.
+    """
+
+    success: bool
+    error_message: str
+    memory_used_mb: int
+    layers_loaded: int
 
 
 @dataclass
@@ -221,29 +254,66 @@ class PipelineCallbackServicer(inference_pb2_grpc.PipelineCallbackServiceService
         self._result_store.deliver(request.request_id, result)
         return inference_pb2.DeliverResultResponse(acknowledged=True)
 
+    def ReportShardReady(self, request, context):
+        """
+        Receive a shard-load outcome from a worker's background load.
+
+        Parameters
+        ----------
+        request : inference_pb2.ShardReadyRequest
+            Carries model_name, node_id, and the load outcome.
+        context : grpc.ServicerContext
+            The gRPC call context.
+
+        Returns
+        -------
+        inference_pb2.ShardReadyResponse
+            Acknowledgement with acknowledged=True.
+        """
+        result = ShardReadyResult(
+            success=request.success,
+            error_message=request.error_message,
+            memory_used_mb=request.memory_used_mb,
+            layers_loaded=request.layers_loaded,
+        )
+        self._result_store.deliver(
+            f"shard:{request.model_name}:{request.node_id}", result
+        )
+        return inference_pb2.ShardReadyResponse(acknowledged=True)
+
 
 class PipelineRunner:
     """
     Orchestrates shard loading, pipeline execution, and shard unloading.
 
-    load() extracts shard bytes from ModelStore and sends LoadShard to
-    each worker in plan order. run_forward() fires RunShard at the first
-    worker and blocks until the last worker calls DeliverResult. unload()
-    sends UnloadShard to all workers.
+    load() resolves each shard's tensor metadata from ModelStore and
+    dispatches it to every worker via LoadShard, then waits for every
+    worker's ReportShardReady before returning - two separate phases,
+    so every worker fetches its own weights independently and in
+    parallel with the others. run_forward() fires RunShard at the first
+    worker and blocks until the last worker calls DeliverResult.
+    unload() sends UnloadShard to all workers.
 
     Parameters
     ----------
     model_store : ModelStore
-        The orchestrator's full-model host for shard extraction.
+        The orchestrator's checkpoint-metadata host for shard planning.
     plan : DispatchPlan
         The dispatch plan describing which worker owns which layers.
     orchestrator_callback_address : str
         Address of the orchestrator's PipelineCallbackService (host:port).
-        Passed to every worker so the last one knows where to deliver.
+        Passed to every worker so it knows where to call back
+        ReportShardReady (and, for the last shard, DeliverResult).
     result_store : ResultStore
-        Shared slot map to register and wait for pipeline results.
+        Shared slot map to register and wait for pipeline results and
+        shard-load outcomes.
     timeout_s : float
-        Seconds to wait for a result before raising TimeoutError.
+        Seconds to wait for an inference result before raising
+        TimeoutError.
+    load_timeout_s : float or None
+        Seconds to wait for a worker's ReportShardReady before raising
+        TimeoutError. None (the default) waits indefinitely; pass a
+        number to bound it.
     """
 
     def __init__(
@@ -253,26 +323,65 @@ class PipelineRunner:
         orchestrator_callback_address: str,
         result_store: ResultStore,
         timeout_s: float = 30.0,
+        load_timeout_s: float | None = None,
     ) -> None:
         self._model_store = model_store
         self._plan = plan
         self._callback_address = orchestrator_callback_address
         self._result_store = result_store
         self._timeout_s = timeout_s
+        self._load_timeout_s = load_timeout_s
         self._generation_lock = threading.Lock()
+
+    def _shard_ready_key(self, node_id: str) -> str:
+        """
+        Build the ResultStore key a worker's ReportShardReady resolves.
+
+        Parameters
+        ----------
+        node_id : str
+            The worker's node ID.
+
+        Returns
+        -------
+        str
+            Namespaced key unique to this model and node.
+        """
+        return f"shard:{self._plan.model_name}:{node_id}"
 
     def load(self) -> None:
         """
-        Extract shard bytes and send LoadShard to each worker in order.
+        Dispatch shard metadata to every worker, then wait for all to load.
+
+        Two phases: first sends LoadShard (tensor locations and config)
+        to every worker in plan order, so each one starts fetching its
+        own weights independently as soon as it's dispatched. Only once
+        every worker has been dispatched does this wait for each one's
+        ReportShardReady, so a slow download on one worker doesn't
+        delay starting the next worker's download.
+
+        Raises
+        ------
+        PipelineError
+            If a worker rejects LoadShard outright, or reports a failed
+            load via ReportShardReady.
+        TimeoutError
+            If a worker's ReportShardReady doesn't arrive within
+            load_timeout_s.
         """
+        for assignment in self._plan.assignments:
+            self._result_store.create_slot(self._shard_ready_key(assignment.node_id))
+
         n = len(self._plan.assignments)
-        with tqdm(total=n, desc="distributing shards", unit="shard") as pbar:
+        with tqdm(
+            total=n, desc="dispatching shard metadata", unit="shard", leave=False
+        ) as pbar:
             for assignment in self._plan.assignments:
                 addr = f"{assignment.ip_address}:{assignment.inference_port}"
                 pbar.set_description(
                     f"shard [{assignment.layer_start},{assignment.layer_end}) -> {addr}"
                 )
-                weights_bytes, config_json = self._model_store.extract_shard(
+                tensor_locations, config_json = self._model_store.extract_shard(
                     self._plan.arch,
                     assignment.layer_start,
                     assignment.layer_end,
@@ -281,17 +390,60 @@ class PipelineRunner:
                 )
                 request = inference_pb2.LoadShardRequest(
                     model_name=self._plan.model_name,
+                    checkpoint=self._plan.checkpoint,
                     arch=self._plan.arch,
                     layer_start=assignment.layer_start,
                     layer_end=assignment.layer_end,
                     total_layers=self._plan.total_layers,
                     next_worker_address=assignment.next_worker_address,
-                    shard_weights=weights_bytes,
+                    tensor_locations=[
+                        inference_pb2.TensorLocation(
+                            dest_name=location.dest_name,
+                            source_name=location.source_name,
+                            source_file=location.source_file,
+                        )
+                        for location in tensor_locations
+                    ],
                     model_config_json=config_json,
+                    orchestrator_callback_address=self._callback_address,
                 )
                 with WorkerClient(addr) as client:
-                    client.load_shard(request)
+                    response = client.load_shard(request)
+                if not response.success:
+                    raise PipelineError(
+                        f"worker {assignment.node_id} rejected LoadShard: "
+                        f"{response.error_message}"
+                    )
                 pbar.update(1)
+
+        executor = ThreadPoolExecutor(max_workers=n)
+        try:
+            futures = {
+                executor.submit(
+                    self._result_store.wait,
+                    self._shard_ready_key(assignment.node_id),
+                    self._load_timeout_s,
+                ): assignment
+                for assignment in self._plan.assignments
+            }
+            with tqdm(
+                total=n,
+                desc="waiting for workers to finish loading",
+                unit="shard",
+                leave=False,
+            ) as pbar:
+                for future in as_completed(futures):
+                    assignment = futures[future]
+                    result = future.result()
+                    if not result.success:
+                        raise PipelineError(
+                            f"worker {assignment.node_id} failed to load shard: "
+                            f"{result.error_message}"
+                        )
+                    pbar.set_description(f"{assignment.node_id} ready")
+                    pbar.update(1)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def run_forward(self, input_tensor: torch.Tensor) -> PipelineResult:
         """

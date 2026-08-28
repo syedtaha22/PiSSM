@@ -7,6 +7,7 @@ residency management. Currently supports Mamba architecture only.
 """
 
 import gc
+import json
 import logging
 import os
 import time
@@ -16,7 +17,6 @@ from typing import Any
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-import psutil
 import torch
 
 import transformers
@@ -24,11 +24,11 @@ import transformers
 transformers.logging.set_verbosity_error()
 warnings.filterwarnings("ignore", message=".*fast path.*")
 
-# huggingface_hub logs every HTTP request (config/tokenizer/weight
-# fetches, cache-resolution checks) via httpx at INFO level, which
-# floods the console on every model load without saying anything
-# actionable. WARNING+ still surfaces real request failures.
+# suppress noisy third-party output from huggingface_hub:
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=".*unauthenticated requests.*")
 
 from transformers import AutoTokenizer, MambaForCausalLM  # noqa: E402
 
@@ -39,6 +39,25 @@ logger = logging.getLogger(__name__)
 _ARCH_TO_MODEL_CLASS = {
     "mamba": MambaForCausalLM,
 }
+
+
+def _weight_bytes_mb(module: torch.nn.Module) -> int:
+    """
+    Sum of a module's parameter and buffer tensor byte sizes.
+
+    Parameters
+    ----------
+    module : torch.nn.Module
+        The model or shard to measure.
+
+    Returns
+    -------
+    int
+        Total parameter and buffer byte size in megabytes.
+    """
+    total_bytes = sum(p.numel() * p.element_size() for p in module.parameters())
+    total_bytes += sum(b.numel() * b.element_size() for b in module.buffers())
+    return total_bytes // (1024 * 1024)
 
 
 @dataclass
@@ -57,7 +76,7 @@ class ModelHandle:
     manifest : Any
         The manifest used to load this model. None for pipeline shards.
     memory_mb : int
-        Approximate memory consumed by the model in megabytes.
+        Byte size of the model's parameter and buffer tensors, in MB.
     loaded_at : float
         Monotonic timestamp when the model was loaded.
     layer_start : int
@@ -121,9 +140,6 @@ def load_model(manifest: ModelManifest) -> ModelHandle:
             f"Supported: {list(_ARCH_TO_MODEL_CLASS.keys())}"
         )
 
-    process = psutil.Process()
-    mem_before = process.memory_info().rss
-
     logger.info("Loading tokenizer '%s'", manifest.tokenizer)
     tokenizer = AutoTokenizer.from_pretrained(manifest.tokenizer)
     if tokenizer.pad_token is None:
@@ -134,11 +150,10 @@ def load_model(manifest: ModelManifest) -> ModelHandle:
     model.to("cpu")
     model.eval()
 
-    mem_after = process.memory_info().rss
-    memory_mb = max(0, (mem_after - mem_before) // (1024 * 1024))
+    memory_mb = _weight_bytes_mb(model)
 
     logger.info(
-        "Model '%s' loaded: ~%d MB, %d layers",
+        "Model '%s' ready: weights ~%d MB, %d layers",
         manifest.name,
         memory_mb,
         manifest.layers,
@@ -171,42 +186,41 @@ def unload_model(handle: ModelHandle) -> int:
     int
         Approximate memory freed in megabytes.
     """
-    process = psutil.Process()
-    mem_before = process.memory_info().rss
+    memory_freed = handle.memory_mb
 
     handle.model = None
     handle.tokenizer = None
     gc.collect()
 
-    mem_after = process.memory_info().rss
-    memory_freed = (mem_before - mem_after) // (1024 * 1024)
-
-    logger.info("Model '%s' unloaded: ~%d MB freed", handle.name, memory_freed)
-    return max(memory_freed, 0)
+    # logger.info("Model '%s' unloaded: ~%d MB freed", handle.name, memory_freed)
+    return memory_freed
 
 
-def load_shard_from_bytes(
-    shard_weights_bytes: bytes,
+def load_shard_from_metadata(
+    tensor_locations: list,
     model_config_json_bytes: bytes,
     arch: str,
     layer_start: int,
     layer_end: int,
     is_first: bool,
     is_last: bool,
+    checkpoint: str,
     next_worker_address: str = "",
     model_name: str = "shard",
 ) -> ModelHandle:
     """
-    Reconstruct a shard module from serialized weights and config bytes.
+    Build a shard module directly for its layer range and load its weights.
 
-    Workers call this to load their assigned layer slice without
-    downloading from HuggingFace. The shard module is placed in CPU
-    eval mode. No tokenizer is loaded.
+    Workers call this after receiving a LoadShardRequest's metadata:
+    it builds this shard's own layers/embedding/norm/lm_head directly
+    from config, then fetches and loads only the tensors named in
+    tensor_locations. The shard module is placed in CPU eval mode. No
+    tokenizer is loaded.
 
     Parameters
     ----------
-    shard_weights_bytes : bytes
-        Serialized shard state_dict from torch.save.
+    tensor_locations : list[inference.shard.TensorLocationSpec]
+        Which tensors this shard needs and where to fetch them from.
     model_config_json_bytes : bytes
         JSON-encoded model config from model.config.to_json_string.
     arch : str
@@ -219,6 +233,9 @@ def load_shard_from_bytes(
         True if this shard owns the embedding component.
     is_last : bool
         True if this shard owns the final norm and lm_head.
+    checkpoint : str
+        HuggingFace repo id or local path, used to resolve each tensor
+        location's source_file to a local path.
     next_worker_address : str
         Address of the next worker in the pipeline, or empty string.
     model_name : str
@@ -243,25 +260,25 @@ def load_shard_from_bytes(
             f"Supported: {list(_ARCH_TO_SHARD_CLASS.keys())}"
         )
 
-    process = psutil.Process()
-    mem_before = process.memory_info().rss
+    config_cls = _ARCH_TO_MODEL_CLASS[arch].config_class
+    config = config_cls.from_dict(json.loads(model_config_json_bytes.decode()))
 
-    shard = shard_cls.from_bytes(
-        shard_weights_bytes,
-        model_config_json_bytes,
+    shard = shard_cls.from_tensor_locations(
+        config,
         layer_start,
         layer_end,
         is_first,
         is_last,
+        checkpoint,
+        tensor_locations,
     )
     shard.to("cpu")
     shard.eval()
 
-    mem_after = process.memory_info().rss
-    memory_mb = max(0, (mem_after - mem_before) // (1024 * 1024))
+    memory_mb = _weight_bytes_mb(shard)
 
     logger.info(
-        "Shard '%s' loaded: layers [%d, %d), ~%d MB",
+        "Shard '%s' ready: layers [%d, %d), weights ~%d MB",
         model_name,
         layer_start,
         layer_end,

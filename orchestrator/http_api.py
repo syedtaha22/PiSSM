@@ -34,6 +34,7 @@ from transformers import AutoTokenizer
 
 from inference.manifest import ManifestError, ModelManifest, manifest_from_dict
 from inference.model_registry import ModelRegistry
+from inference.service import _format_error
 from orchestrator.dispatch import DispatchError, DispatchPlan, plan_dispatch
 from orchestrator.model_store import ModelStore
 from orchestrator.node_registry import NodeInfo, NodeRegistry
@@ -235,6 +236,19 @@ def create_app(
             runner=runner, model_store=model_store, tokenizer=tokenizer
         )
 
+    def _unload_session(name: str, session: _InferenceSession) -> None:
+        """
+        Free a model's shards from the workers that were holding it.
+        """
+        try:
+            session.runner.unload()
+        except Exception:
+            logger.warning(
+                "Failed to cleanly unload '%s' - continuing anyway",
+                name,
+                exc_info=True,
+            )
+
     def _ensure_loading_started(manifest: ModelManifest) -> _ModelState:
         """
         Return the model's current state, starting a background load if
@@ -244,6 +258,19 @@ def create_app(
             state = model_states.get(manifest.name)
             if state is not None and state.status in ("loading", "ready"):
                 return state
+
+            # Unload whatever model is currently loaded - only one
+            # model runs on the cluster at a time.
+            loaded = [
+                (other_name, other_state.session)
+                for other_name, other_state in model_states.items()
+                if other_state.status == "ready"
+            ]
+            for other_name, _ in loaded:
+                del model_states[other_name]
+
+        for other_name, session in loaded:
+            _unload_session(other_name, session)
 
         try:
             plan = plan_dispatch(manifest, registry)
@@ -258,14 +285,19 @@ def create_app(
             model_states[manifest.name] = state
 
         def _load() -> None:
+            start = time.monotonic()
             try:
                 session = _build_session(manifest, plan)
+                elapsed_s = time.monotonic() - start
+                logger.info("Model '%s' loaded in %.1fs", manifest.name, elapsed_s)
                 with states_lock:
                     model_states[manifest.name] = _ModelState(
                         status="ready", plan=plan, session=session
                     )
             except Exception as err:
-                logger.exception("Failed to load model '%s'", manifest.name)
+                logger.error(
+                    "Failed to load model '%s': %s", manifest.name, _format_error(err)
+                )
                 with states_lock:
                     model_states[manifest.name] = _ModelState(
                         status="error", plan=plan, error=str(err)
@@ -507,15 +539,7 @@ def create_app(
             del model_states[name]
 
         if old_session is not None:
-            try:
-                old_session.runner.unload()
-            except Exception:
-                logger.warning(
-                    "Failed to cleanly unload '%s' from its previous nodes "
-                    "before redistributing - continuing anyway",
-                    name,
-                    exc_info=True,
-                )
+            _unload_session(name, old_session)
 
         state = _ensure_loading_started(manifest)
         return {
