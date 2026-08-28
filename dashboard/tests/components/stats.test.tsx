@@ -1,14 +1,32 @@
 import { render, screen, waitFor } from '@testing-library/react'
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import Dashboard from '@/components/pages/dashboard'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import Stats from '@/components/pages/stats'
 import * as api from '@/lib/api'
+
+// jsdom always reports 0x0 for getBoundingClientRect, so Recharts'
+// ResponsiveContainer (rendered via MetricsPanel) logs a width/height
+// warning without this -- same limitation documented in
+// metrics-panel.test.tsx.
+beforeEach(() => {
+  vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+    width: 800,
+    height: 400,
+    top: 0,
+    left: 0,
+    bottom: 400,
+    right: 800,
+    x: 0,
+    y: 0,
+    toJSON() {},
+  })
+})
 
 afterEach(() => {
   vi.restoreAllMocks()
   window.localStorage.clear()
 })
 
-describe('Dashboard', () => {
+describe('Stats', () => {
   it('renders node status from listNodes()', async () => {
     vi.spyOn(api, 'listNodes').mockResolvedValue([
       {
@@ -27,7 +45,7 @@ describe('Dashboard', () => {
       },
     ])
 
-    render(<Dashboard />)
+    render(<Stats />)
 
     expect(screen.getByText('Total Nodes')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByText('node-1')).toBeInTheDocument())
@@ -36,7 +54,7 @@ describe('Dashboard', () => {
   it('shows an error message when listNodes() fails', async () => {
     vi.spyOn(api, 'listNodes').mockRejectedValue(new Error('orchestrator unreachable'))
 
-    render(<Dashboard />)
+    render(<Stats />)
 
     await waitFor(() =>
       expect(screen.getByText('orchestrator unreachable')).toBeInTheDocument()
@@ -46,7 +64,7 @@ describe('Dashboard', () => {
   it('shows a placeholder message when no prompts have been sent yet', async () => {
     vi.spyOn(api, 'listNodes').mockResolvedValue([])
 
-    render(<Dashboard />)
+    render(<Stats />)
 
     await waitFor(() =>
       expect(
@@ -65,7 +83,7 @@ describe('Dashboard', () => {
       ])
     )
 
-    render(<Dashboard />)
+    render(<Stats />)
 
     await waitFor(() =>
       expect(screen.getByText('Inference Metrics (2 prompts)')).toBeInTheDocument()

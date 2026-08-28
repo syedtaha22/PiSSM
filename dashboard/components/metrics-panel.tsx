@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react'
 import type { InferenceLogEntry } from '@/lib/history'
 import MetricChart, { type MetricPoint } from '@/components/metric-chart'
+import { TabRow } from '@/components/ui/tab-row'
 
 type Tab = 'latency' | 'tokens'
 
@@ -53,7 +54,7 @@ export default function MetricsPanel({ entries }: { entries: InferenceLogEntry[]
 
   return (
     <div className="flex-1 min-h-0 flex flex-col space-y-4">
-      <div className="flex items-center justify-between shrink-0 flex-wrap gap-2">
+      <div className="flex items-center justify-between shrink-0 flex-wrap gap-2 font-sans">
         <h2 className="text-sm font-medium text-foreground">
           Inference Metrics ({filtered.length} prompt{filtered.length === 1 ? '' : 's'})
         </h2>
@@ -62,7 +63,7 @@ export default function MetricsPanel({ entries }: { entries: InferenceLogEntry[]
             aria-label="Filter by model"
             value={modelFilter}
             onChange={(e) => setModelFilter(e.target.value)}
-            className="border border-border rounded px-2 py-1 bg-background text-foreground"
+            className="rounded-sm border border-border bg-card px-2 py-1 text-foreground focus:outline-none focus:border-primary"
           >
             <option value="all">All models</option>
             {models.map((m) => (
@@ -75,7 +76,7 @@ export default function MetricsPanel({ entries }: { entries: InferenceLogEntry[]
             aria-label="Filter by node count"
             value={nodesFilter}
             onChange={(e) => setNodesFilter(e.target.value)}
-            className="border border-border rounded px-2 py-1 bg-background text-foreground"
+            className="rounded-sm border border-border bg-card px-2 py-1 text-foreground focus:outline-none focus:border-primary"
           >
             <option value="all">All node counts</option>
             {nodeCounts.map((n) => (
@@ -89,7 +90,7 @@ export default function MetricsPanel({ entries }: { entries: InferenceLogEntry[]
             type="date"
             value={dateFrom}
             onChange={(e) => setDateFrom(e.target.value)}
-            className="border border-border rounded px-2 py-1 bg-background text-foreground"
+            className="rounded-sm border border-border bg-card px-2 py-1 text-foreground focus:outline-none focus:border-primary"
           />
           <span className="text-muted-foreground">to</span>
           <input
@@ -97,31 +98,20 @@ export default function MetricsPanel({ entries }: { entries: InferenceLogEntry[]
             type="date"
             value={dateTo}
             onChange={(e) => setDateTo(e.target.value)}
-            className="border border-border rounded px-2 py-1 bg-background text-foreground"
+            className="rounded-sm border border-border bg-card px-2 py-1 text-foreground focus:outline-none focus:border-primary"
           />
         </div>
       </div>
 
-      <div className="inline-flex text-xs border border-border rounded overflow-hidden w-fit shrink-0">
-        {(
-          [
-            ['latency', 'Latency'],
-            ['tokens', 'Tokens/sec'],
-          ] as [Tab, string][]
-        ).map(([value, tabLabel]) => (
-          <button
-            key={value}
-            onClick={() => setTab(value)}
-            className={`px-3 py-1.5 ${
-              tab === value
-                ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:bg-muted'
-            }`}
-          >
-            {tabLabel}
-          </button>
-        ))}
-      </div>
+      <TabRow
+        items={[
+          { value: 'latency', label: 'Latency' },
+          { value: 'tokens', label: 'Tokens/sec' },
+        ]}
+        active={tab}
+        onChange={(value) => setTab(value as Tab)}
+        className="shrink-0 w-fit"
+      />
 
       <div className="flex-1 min-h-0">
         {tab === 'latency' ? (

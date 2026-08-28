@@ -2,14 +2,15 @@
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
 
-
-@custom-variant dark (&:is(.dark *));
-
-@layer base {
-  :root {
-    --font-sans: var(--font-bricolage), ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
-  }
-}
+/* Design tokens: this dashboard follows the design style of
+   https://github.com/systems-resarch-at-iba/site (Signal on Paper).
+   Semantic shadcn variable names are kept (so components/ui/button.tsx
+   and every bg-primary/text-muted-foreground class elsewhere still works
+   unchanged), with a teal "signal" accent in place of the original
+   indigo. Runtime light/dark switching uses a [data-theme] attribute on
+   <html> plus JS-driven CSS variable overrides (see lib/theme.ts), not a
+   `.dark` class toggle -- so there's no `.dark` block here the way
+   default shadcn scaffolding has one. */
 
 @theme inline {
   --color-sidebar-ring: var(--sidebar-ring);
@@ -28,6 +29,10 @@
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
+  /* Not part of shadcn's standard token set: a slightly darker border for
+     hover states (e.g. model cards), one step up from the resting
+     --border. */
+  --color-border-strong: var(--border-strong);
   --color-destructive: var(--destructive);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
@@ -43,54 +48,89 @@
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
+  /* A restrained radius scale (6px/10px sm/md pair) instead of shadcn's
+     default calc(--radius * N) ramp, which produces much larger, softer
+     corners (up to --radius * 2.6) -- the largest radius used anywhere in
+     this dashboard is 10px, plus rounded-full for pills. */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 10px;
+  --radius-xl: 10px;
+  --radius-2xl: 10px;
+  --radius-3xl: 10px;
+  --radius-4xl: 10px;
 }
 
+@layer base {
+  :root {
+    --font-sans: var(--font-bricolage), ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-display: var(--font-bricolage), ui-sans-serif, system-ui, sans-serif;
+    --font-serif: var(--font-source-serif), Georgia, serif;
+    --font-mono: var(--font-jetbrains-mono), 'Courier New', monospace;
+  }
+}
+
+/* Strong enough to read as "floating" (used by the nav and theme switcher),
+   not varied by theme -- a fixed dark shadow reads as dark-on-dark once
+   the background itself goes dark. */
+@theme {
+  --shadow-nav: 0 8px 28px rgb(21 22 27 / 0.18), 0 2px 8px rgb(21 22 27 / 0.1);
+}
+
+/* Only the primitives below (background/card/foreground/muted-foreground/
+   border/border-strong/primary/primary-foreground/accent/accent-foreground/
+   destructive) are ever written to directly -- by lib/theme.ts's
+   applyTheme() at runtime, and as literal values here for the initial
+   server-rendered (light-mode) paint. Every other variable (popover,
+   secondary, muted, input, ring, sidebar-*) is derived from those via
+   var(), so switching theme only ever means updating this one small set. */
 :root {
   color-scheme: light;
-  --background: #fafaf8;
-  --foreground: #2d2d2a;
-  --card: #fafaf8;
-  --card-foreground: #2d2d2a;
-  --popover: #fafaf8;
-  --popover-foreground: #2d2d2a;
-  --primary: #6366f1;
-  --primary-foreground: #fafaf8;
-  --secondary: #f5f5f2;
-  --secondary-foreground: #2d2d2a;
-  --muted: #d4d4cc;
-  --muted-foreground: #7a7a74;
-  --accent: #a78bfa;
-  --accent-foreground: #2d2d2a;
+  --background: #fafaf9;
+  --card: #ffffff;
+  --foreground: #15161b;
+  --muted-foreground: #5b5e68;
+  --border: #e7e7e3;
+  --border-strong: #d4d4ce;
+  --primary: #0d9488;
+  --primary-foreground: #ffffff;
+  --accent: #f0fdfa;
+  --accent-foreground: #0f766e;
   --destructive: #dc2626;
-  --border: #e5e5e0;
-  --input: #f5f5f2;
-  --ring: #6366f1;
-  --chart-1: #6366f1;
-  --chart-2: #a78bfa;
-  --chart-3: #c084fc;
-  --chart-4: #e879f9;
-  --chart-5: #f472b6;
-  --radius: 0.5rem;
-  --sidebar: #fafaf8;
-  --sidebar-foreground: #2d2d2a;
-  --sidebar-primary: #6366f1;
-  --sidebar-primary-foreground: #fafaf8;
-  --sidebar-accent: #a78bfa;
-  --sidebar-accent-foreground: #2d2d2a;
-  --sidebar-border: #e5e5e0;
-  --sidebar-ring: #6366f1;
+
+  --card-foreground: var(--foreground);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --secondary: var(--background);
+  --secondary-foreground: var(--foreground);
+  --muted: var(--background);
+  --input: var(--card);
+  --ring: var(--primary);
+  --chart-1: var(--primary);
+  --chart-2: #22c55e;
+  --chart-3: #0ea5e9;
+  --chart-4: #0f766e;
+  --chart-5: #14b8a6;
+  --radius: 10px;
+  --sidebar: var(--background);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--primary);
 }
 
-
-
-
+/* Aurora glow: plain custom properties, not @theme -- these aren't meant
+   to become Tailwind utilities, just values body's background reads
+   directly. Defaults here match light mode; lib/theme.ts's applyTheme()
+   overwrites these at runtime to match dark mode. */
+:root {
+  --aurora-1: hsl(174.7 72% 52% / 0.34);
+  --aurora-2: hsl(142.7 72% 52% / 0.289);
+  --aurora-3: hsl(206.7 72% 52% / 0.289);
+}
 
 @layer base {
   * {
@@ -98,5 +138,42 @@
   }
   body {
     @apply bg-background text-foreground;
+    /* Applied on body itself so every page gets the aurora glow
+       automatically. --aurora-* come from :root above and are
+       re-derived per light/dark mode by applyTheme(). The dot grid is
+       rendered separately by components/effects/interactive-dot-grid.tsx
+       (a canvas, mounted in layout.tsx) so individual dots can react to
+       the cursor -- a CSS background pattern can't address individual
+       cells in response to mouse position. */
+    background-repeat: no-repeat;
+    background-image:
+      radial-gradient(circle at 8% -5%, var(--aurora-1), transparent 32%),
+      radial-gradient(circle at 45% -8%, var(--aurora-2), transparent 30%),
+      radial-gradient(circle at 82% 0%, var(--aurora-3), transparent 28%);
   }
+}
+
+/* @xyflow/react (components/pages/topology.tsx) ships its own default
+   theme (white controls, grey dots) via these CSS variables regardless of
+   the page's own tokens -- scoped overrides so the topology graph's chrome
+   (background dots, zoom controls) matches the rest of the dashboard
+   instead of looking like an unstyled third-party widget dropped in.
+
+   Deliberately setting the *primary* variable names (--xy-foo), not the
+   "-default" tier (--xy-foo-default): xyflow's own stylesheet also sets
+   --xy-foo-default on this exact same .react-flow selector, and nothing
+   here ever adds a .react-flow.dark class for its built-in dark variant
+   to apply, so overriding the "-default" tier would depend on cascade
+   order between two equal-specificity rules. The primary tier is a
+   distinct variable xyflow's stylesheet never sets at all, so there's no
+   such collision to begin with. */
+.react-flow {
+  --xy-background-pattern-color: var(--border);
+  --xy-controls-button-background-color: var(--card);
+  --xy-controls-button-background-color-hover: var(--accent);
+  --xy-controls-button-border-color: var(--border);
+  --xy-controls-button-color: var(--foreground);
+  --xy-controls-button-color-hover: var(--accent-foreground);
+  --xy-edge-stroke: var(--muted-foreground);
+  --xy-edge-stroke-selected: var(--primary);
 }

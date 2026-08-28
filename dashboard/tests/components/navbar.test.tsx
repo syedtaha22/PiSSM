@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import Sidebar from '@/components/sidebar'
+import { Navbar } from '@/components/navbar'
 import * as api from '@/lib/api'
 
 afterEach(() => {
@@ -22,20 +22,20 @@ const SAMPLE_NODE = {
   inference_port: 50052,
 }
 
-describe('Sidebar', () => {
+describe('Navbar', () => {
   it('shows the real registered node count instead of a hardcoded number', async () => {
     vi.spyOn(api, 'listNodes').mockResolvedValue([SAMPLE_NODE, { ...SAMPLE_NODE, node_id: 'node-1' }])
 
-    render(<Sidebar currentPage="dashboard" onNavigate={() => {}} />)
+    render(<Navbar currentPage="stats" onNavigate={() => {}} />)
 
-    await waitFor(() => expect(screen.getByText('2 nodes • Active')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTitle('2 nodes registered')).toHaveTextContent('2'))
   })
 
-  it('shows Idle when no nodes are available', async () => {
+  it('shows 0 when no nodes are registered', async () => {
     vi.spyOn(api, 'listNodes').mockResolvedValue([])
 
-    render(<Sidebar currentPage="dashboard" onNavigate={() => {}} />)
+    render(<Navbar currentPage="stats" onNavigate={() => {}} />)
 
-    await waitFor(() => expect(screen.getByText('0 nodes • Idle')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTitle('0 nodes registered')).toHaveTextContent('0'))
   })
 })

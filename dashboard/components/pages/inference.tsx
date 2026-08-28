@@ -233,9 +233,9 @@ export default function Inference() {
   const banner = statusMessage()
 
   return (
-    <div className="p-8 h-full flex flex-col">
+    <div className="mx-auto h-full w-full max-w-[1120px] flex flex-col p-8">
       {/* Model Selection */}
-      <div className="mb-8 space-y-2">
+      <div className="mb-8 space-y-2 font-sans">
         <label htmlFor="model-select" className="text-sm font-medium text-foreground">
           Model
         </label>
@@ -245,7 +245,7 @@ export default function Inference() {
             value={selectedModel}
             onChange={(e) => handleSelectModel(e.target.value)}
             disabled={models.length === 0}
-            className="flex-1 px-3 py-2 border border-border rounded bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
+            className="flex-1 rounded-sm border border-border bg-card px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
           >
             {models.length === 0 ? (
               <option value="">No models registered</option>
@@ -262,7 +262,7 @@ export default function Inference() {
             onClick={handleRedistribute}
             disabled={!canRedistribute}
             title="Re-dispatch this model across the currently available nodes - use this after a node joins or leaves the cluster"
-            className="px-3 py-2 border border-border rounded text-sm text-foreground hover:bg-muted disabled:opacity-50 transition-colors flex items-center gap-2"
+            className="flex items-center gap-2 rounded-sm border border-border px-3 py-2 text-sm text-foreground hover:bg-accent hover:text-accent-foreground hover:border-transparent disabled:opacity-50 transition-colors cursor-pointer"
           >
             <RefreshCw size={14} className={redistributing ? 'animate-spin' : undefined} />
             Redistribute
@@ -281,10 +281,10 @@ export default function Inference() {
         </div>
         {banner && (
           <div
-            className={`flex items-center gap-2 text-xs rounded px-3 py-2 ${
+            className={`flex items-center gap-2 rounded-sm px-3 py-2 text-xs ${
               modelStatus === 'error' || modelsError
                 ? 'bg-destructive/10 text-destructive'
-                : 'bg-muted text-muted-foreground'
+                : 'bg-accent text-accent-foreground'
             }`}
           >
             {modelStatus === 'loading' && <Loader2 size={12} className="animate-spin" />}
@@ -309,10 +309,10 @@ export default function Inference() {
                   className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                 >
                   <div
-                    className={`max-w-xl px-4 py-2 rounded text-sm break-words whitespace-pre-wrap ${
+                    className={`max-w-xl rounded-md px-4 py-2 font-sans text-sm break-words whitespace-pre-wrap ${
                       msg.role === 'user'
                         ? 'bg-primary text-primary-foreground'
-                        : 'bg-border text-foreground'
+                        : 'border border-border bg-card text-foreground'
                     }`}
                   >
                     {isStreamingPlaceholder ? (
@@ -329,8 +329,8 @@ export default function Inference() {
             })}
           </div>
         ) : (
-          <div className="w-full h-64 border border-border rounded bg-background/50 flex items-center justify-center">
-            <div className="text-center text-muted-foreground text-sm">
+          <div className="w-full h-64 rounded-md border border-dashed border-border flex items-center justify-center">
+            <div className="text-center font-sans text-sm text-muted-foreground">
               <div className="space-y-2">
                 <div>Time Series Chart</div>
                 <div className="text-xs">Charts will render timeseries model outputs here</div>
@@ -341,7 +341,7 @@ export default function Inference() {
       </div>
 
       {/* Input Area */}
-      <div className="space-y-4 border-t border-border pt-4">
+      <div className="space-y-4 border-t border-border pt-4 font-sans">
         <div className="flex gap-2">
           <input
             ref={inputRef}
@@ -361,7 +361,7 @@ export default function Inference() {
                   ? 'Enter prompt...'
                   : 'Enter data...'
             }
-            className="flex-1 px-3 py-2 border border-border rounded bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary text-sm disabled:opacity-50"
+            className="flex-1 rounded-sm border border-border bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
             disabled={sending || !modelReady}
           />
           <button
@@ -369,29 +369,29 @@ export default function Inference() {
             disabled={!canSend}
             aria-label="Send"
             title={!modelReady ? 'Waiting for model to finish loading' : undefined}
-            className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm hover:bg-primary/90 disabled:opacity-50 transition-colors flex items-center gap-2"
+            className="flex items-center gap-2 rounded-sm bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors cursor-pointer"
           >
             <Send size={16} />
           </button>
         </div>
 
         {/* Metrics */}
-        <div className="grid grid-cols-4 gap-4 pt-4 border-t border-border">
+        <div className="grid grid-cols-4 gap-4 border-t border-border pt-4">
           <div>
             <div className="text-xs text-muted-foreground">Latency</div>
-            <div className="text-sm font-mono text-foreground">{metrics.latency}</div>
+            <div className="font-mono text-sm text-foreground">{metrics.latency}</div>
           </div>
           <div>
             <div className="text-xs text-muted-foreground">Tokens/sec</div>
-            <div className="text-sm font-mono text-foreground">{metrics.tokensPerSec}</div>
+            <div className="font-mono text-sm text-foreground">{metrics.tokensPerSec}</div>
           </div>
           <div>
             <div className="text-xs text-muted-foreground">Peak Memory</div>
-            <div className="text-sm font-mono text-foreground">{metrics.peakMemory}</div>
+            <div className="font-mono text-sm text-foreground">{metrics.peakMemory}</div>
           </div>
           <div>
             <div className="text-xs text-muted-foreground">Nodes Used</div>
-            <div className="text-sm font-mono text-foreground">{metrics.nodes}</div>
+            <div className="font-mono text-sm text-foreground">{metrics.nodes}</div>
           </div>
         </div>
       </div>

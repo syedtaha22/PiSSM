@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import Inference from '@/components/pages/inference'
@@ -63,13 +63,17 @@ describe('Inference', () => {
       .mockResolvedValueOnce([SAMPLE_MODEL])
 
     render(<Inference />)
-    await vi.advanceTimersByTimeAsync(0)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
 
     expect(listModelsSpy).toHaveBeenCalledTimes(1)
     expect(screen.queryByRole('option', { name: 'dummy-mamba-tiny' })).not.toBeInTheDocument()
 
     // Matches MODELS_POLL_INTERVAL_MS in inference.tsx.
-    await vi.advanceTimersByTimeAsync(3000)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000)
+    })
 
     expect(listModelsSpy).toHaveBeenCalledTimes(2)
     expect(screen.getByRole('option', { name: 'dummy-mamba-tiny' })).toBeInTheDocument()
