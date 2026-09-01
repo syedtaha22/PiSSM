@@ -37,6 +37,7 @@ def make_manifest(name="mamba-130m"):
         state_dim=16,
         input_type="text",
         tokenizer="EleutherAI/gpt-neox-20b",
+        dtype="float32",
     )
 
 

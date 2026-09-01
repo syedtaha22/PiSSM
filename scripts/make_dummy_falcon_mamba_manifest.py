@@ -36,6 +36,7 @@ hidden_dim: {hidden_dim}
 state_dim: {state_dim}
 input_type: text
 tokenizer: {tokenizer}
+dtype: float32
 """
 
 

@@ -20,6 +20,7 @@ VALID_MANIFEST_DATA = {
     "state_dim": 16,
     "input_type": "text",
     "tokenizer": "EleutherAI/gpt-neox-20b",
+    "dtype": "float32",
 }
 
 
@@ -64,6 +65,7 @@ class TestLoadValidManifest:
         assert manifest.state_dim == 16
         assert manifest.input_type == "text"
         assert manifest.tokenizer == "EleutherAI/gpt-neox-20b"
+        assert manifest.dtype == "float32"
 
     def test_manifest_is_frozen(self, tmp_path):
         """
@@ -92,6 +94,7 @@ class TestMissingFields:
             "state_dim",
             "input_type",
             "tokenizer",
+            "dtype",
         ],
     )
     def test_missing_required_field(self, tmp_path, field):
@@ -140,6 +143,16 @@ class TestInvalidValues:
         path = write_manifest(tmp_path, data)
 
         with pytest.raises(ManifestError, match="input_type"):
+            load_manifest(path)
+
+    def test_unsupported_dtype(self, tmp_path):
+        """
+        An unsupported dtype raises ManifestError.
+        """
+        data = {**VALID_MANIFEST_DATA, "dtype": "int8"}
+        path = write_manifest(tmp_path, data)
+
+        with pytest.raises(ManifestError, match="dtype"):
             load_manifest(path)
 
     def test_layers_zero(self, tmp_path):

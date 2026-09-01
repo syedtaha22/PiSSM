@@ -390,6 +390,57 @@ class TestFromTensorLocations:
     def _dummy_config(self):
         return AutoConfig.from_pretrained(DUMMY_CHECKPOINT)
 
+    def test_builds_layers_in_config_dtype(self):
+        """
+        Shard parameters are constructed directly in config.dtype, not
+        PyTorch's float32 default - the fix for shard construction
+        costing up to 2x a checkpoint's real memory before a single
+        tensor is fetched from it.
+        """
+        config = self._dummy_config()
+        config.dtype = torch.bfloat16
+        weight_map = read_checkpoint_metadata(DUMMY_CHECKPOINT).weight_map
+        locations = MambaShardModule.tensor_locations_for_range(
+            weight_map, layer_start=0, layer_end=2, is_first=True, is_last=True
+        )
+
+        shard = MambaShardModule.from_tensor_locations(
+            config,
+            layer_start=0,
+            layer_end=2,
+            is_first=True,
+            is_last=True,
+            checkpoint=DUMMY_CHECKPOINT,
+            tensor_locations=locations,
+        )
+
+        assert all(p.dtype == torch.bfloat16 for p in shard.parameters())
+
+    def test_defaults_to_float32_when_config_dtype_unset(self):
+        """
+        A config with no dtype set (None) falls back to float32, matching
+        PyTorch's own default rather than raising or silently building
+        garbage-dtype tensors.
+        """
+        config = self._dummy_config()
+        config.dtype = None
+        weight_map = read_checkpoint_metadata(DUMMY_CHECKPOINT).weight_map
+        locations = MambaShardModule.tensor_locations_for_range(
+            weight_map, layer_start=0, layer_end=2, is_first=True, is_last=True
+        )
+
+        shard = MambaShardModule.from_tensor_locations(
+            config,
+            layer_start=0,
+            layer_end=2,
+            is_first=True,
+            is_last=True,
+            checkpoint=DUMMY_CHECKPOINT,
+            tensor_locations=locations,
+        )
+
+        assert all(p.dtype == torch.float32 for p in shard.parameters())
+
     def test_matches_directly_loaded_reference_for_first_shard(self):
         """
         A first shard built via from_tensor_locations has the same

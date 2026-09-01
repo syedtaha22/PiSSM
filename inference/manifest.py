@@ -14,6 +14,7 @@ import yaml
 
 SUPPORTED_ARCHITECTURES = ("mamba", "falcon-mamba", "s4", "llm-transformer")
 SUPPORTED_INPUT_TYPES = ("text", "timeseries", "audio")
+SUPPORTED_DTYPES = ("float32", "float16", "bfloat16")
 REQUIRED_FIELDS = (
     "name",
     "arch",
@@ -23,6 +24,7 @@ REQUIRED_FIELDS = (
     "state_dim",
     "input_type",
     "tokenizer",
+    "dtype",
 )
 
 
@@ -55,6 +57,8 @@ class ModelManifest:
         Input data type: "text", "timeseries", or "audio".
     tokenizer : str
         HuggingFace tokenizer ID or local path.
+    dtype : str
+        Checkpoint's weight dtype: "float32", "float16", or "bfloat16".
     """
 
     name: str
@@ -65,6 +69,7 @@ class ModelManifest:
     state_dim: int
     input_type: str
     tokenizer: str
+    dtype: str
 
 
 def validate_manifest(data: dict) -> None:
@@ -99,6 +104,12 @@ def validate_manifest(data: dict) -> None:
         raise ManifestError(
             f"Unsupported input_type: '{data['input_type']}'. "
             f"Must be one of {SUPPORTED_INPUT_TYPES}"
+        )
+
+    if data["dtype"] not in SUPPORTED_DTYPES:
+        raise ManifestError(
+            f"Unsupported dtype: '{data['dtype']}'. "
+            f"Must be one of {SUPPORTED_DTYPES}"
         )
 
     for field in ("layers", "hidden_dim", "state_dim"):
@@ -144,6 +155,7 @@ def manifest_from_dict(data: dict) -> ModelManifest:
         state_dim=data["state_dim"],
         input_type=data["input_type"],
         tokenizer=data["tokenizer"],
+        dtype=data["dtype"],
     )
 
 

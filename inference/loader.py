@@ -146,7 +146,9 @@ def load_model(manifest: ModelManifest) -> ModelHandle:
         tokenizer.pad_token = tokenizer.eos_token
 
     logger.info("Loading model '%s' (%s)", manifest.name, manifest.checkpoint)
-    model = model_class.from_pretrained(manifest.checkpoint)
+    model = model_class.from_pretrained(
+        manifest.checkpoint, dtype=getattr(torch, manifest.dtype)
+    )
     model.to("cpu")
     model.eval()
 

@@ -43,6 +43,11 @@ class ModelStore:
         """
         self._metadata = read_checkpoint_metadata(manifest.checkpoint)
         config = AutoConfig.from_pretrained(manifest.checkpoint)
+        # Force the manifest's declared dtype rather than trust whatever
+        # (if anything) the checkpoint's own config.json happens to carry -
+        # this is what workers build shard layers in directly, so it must
+        # match the checkpoint's real on-disk dtype exactly.
+        config.dtype = manifest.dtype
         self._config_json = config.to_json_string().encode()
 
     def extract_shard(

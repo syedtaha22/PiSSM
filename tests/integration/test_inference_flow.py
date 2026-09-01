@@ -239,6 +239,7 @@ DUMMY_MANIFEST = ModelManifest(
     state_dim=8,
     input_type="text",
     tokenizer="EleutherAI/gpt-neox-20b",
+    dtype="float32",
 )
 
 

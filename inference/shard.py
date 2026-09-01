@@ -339,19 +339,27 @@ class MambaShardModule(nn.Module):
             A shard built for this layer range with the requested
             tensors loaded.
         """
+        torch_dtype = config.dtype if config.dtype is not None else torch.float32
         layers = [
-            cls._block_cls(config, layer_idx=i) for i in range(layer_start, layer_end)
+            cls._block_cls(config, layer_idx=i).to(dtype=torch_dtype)
+            for i in range(layer_start, layer_end)
         ]
         embeddings = (
-            nn.Embedding(config.vocab_size, config.hidden_size) if is_first else None
+            nn.Embedding(config.vocab_size, config.hidden_size, dtype=torch_dtype)
+            if is_first
+            else None
         )
         norm_f = (
-            cls._norm_cls(config.hidden_size, eps=config.layer_norm_epsilon)
+            cls._norm_cls(config.hidden_size, eps=config.layer_norm_epsilon).to(
+                dtype=torch_dtype
+            )
             if is_last
             else None
         )
         lm_head = (
-            nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+            nn.Linear(
+                config.hidden_size, config.vocab_size, bias=False, dtype=torch_dtype
+            )
             if is_last
             else None
         )

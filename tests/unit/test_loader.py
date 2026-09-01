@@ -13,7 +13,7 @@ import torch
 from inference.manifest import ModelManifest
 
 
-def make_manifest(arch="mamba"):
+def make_manifest(arch="mamba", dtype="float32"):
     """
     Create a ModelManifest with sensible defaults.
 
@@ -21,6 +21,8 @@ def make_manifest(arch="mamba"):
     ----------
     arch : str
         Architecture for the manifest.
+    dtype : str
+        Checkpoint dtype for the manifest.
 
     Returns
     -------
@@ -36,6 +38,7 @@ def make_manifest(arch="mamba"):
         state_dim=16,
         input_type="text",
         tokenizer="test/tokenizer",
+        dtype=dtype,
     )
 
 
@@ -150,6 +153,30 @@ class TestLoadModel:
             load_model(make_manifest())
 
         mock_model.to.assert_called_once_with("cpu")
+
+    @patch("inference.loader.AutoTokenizer")
+    def test_load_uses_manifest_dtype(self, mock_tokenizer_cls):
+        """
+        from_pretrained is called with the manifest's declared dtype
+        resolved to a real torch.dtype, not PyTorch's float32 default.
+        """
+        from inference.loader import _ARCH_TO_MODEL_CLASS, load_model
+
+        mock_model = self.make_mock_model()
+        mock_model_cls = MagicMock()
+        mock_model_cls.from_pretrained.return_value = mock_model
+
+        mock_tokenizer = MagicMock()
+        mock_tokenizer.pad_token = "pad"
+        mock_tokenizer_cls.from_pretrained.return_value = mock_tokenizer
+
+        manifest = make_manifest(dtype="bfloat16")
+        with patch.dict(_ARCH_TO_MODEL_CLASS, {"mamba": mock_model_cls}):
+            load_model(manifest)
+
+        mock_model_cls.from_pretrained.assert_called_once_with(
+            manifest.checkpoint, dtype=torch.bfloat16
+        )
 
     @patch("inference.loader.AutoTokenizer")
     def test_load_reports_weight_byte_size(self, mock_tokenizer_cls):

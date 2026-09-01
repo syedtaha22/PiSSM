@@ -18,6 +18,7 @@ hidden_dim: 768
 state_dim: 16
 input_type: text
 tokenizer: EleutherAI/gpt-neox-20b
+dtype: float32
 """
 
 

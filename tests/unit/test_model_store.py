@@ -16,12 +16,13 @@ from huggingface_hub.utils import are_progress_bars_disabled
 from orchestrator.model_store import ModelStore
 
 
-def make_manifest(checkpoint="state-spaces/mamba-130m-hf"):
+def make_manifest(checkpoint="state-spaces/mamba-130m-hf", dtype="float32"):
     """
     Return a minimal mock manifest exposing only what ModelStore reads.
     """
     manifest = MagicMock()
     manifest.checkpoint = checkpoint
+    manifest.dtype = dtype
     return manifest
 
 
@@ -49,6 +50,27 @@ class TestLoad:
         mock_auto_config.from_pretrained.assert_called_once_with(
             "state-spaces/mamba-130m-hf"
         )
+
+    @patch("orchestrator.model_store.AutoConfig")
+    @patch("orchestrator.model_store.read_checkpoint_metadata")
+    def test_load_sets_config_dtype_from_manifest(
+        self, mock_read_metadata, mock_auto_config
+    ):
+        """
+        load() overwrites config.dtype with the manifest's declared dtype
+        before serializing, so workers build shard layers directly in the
+        checkpoint's real dtype instead of trusting (or missing) whatever
+        the checkpoint's own config.json happens to carry.
+        """
+        mock_read_metadata.return_value = MagicMock(weight_map={})
+        mock_config = MagicMock()
+        mock_config.to_json_string.return_value = "{}"
+        mock_auto_config.from_pretrained.return_value = mock_config
+
+        store = ModelStore()
+        store.load(make_manifest(dtype="bfloat16"))
+
+        assert mock_config.dtype == "bfloat16"
 
 
 class TestExtractShard:

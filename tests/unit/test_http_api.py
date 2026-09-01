@@ -29,6 +29,7 @@ hidden_dim: 768
 state_dim: 16
 input_type: text
 tokenizer: EleutherAI/gpt-neox-20b
+dtype: float32
 """
 
 
@@ -102,6 +103,7 @@ class TestGetModels:
                 state_dim=16,
                 input_type="text",
                 tokenizer="EleutherAI/gpt-neox-20b",
+                dtype="float32",
             )
         )
 
@@ -206,6 +208,7 @@ def _registered_manifest(model_registry):
         state_dim=16,
         input_type="text",
         tokenizer="EleutherAI/gpt-neox-20b",
+        dtype="float32",
     )
     model_registry.register(manifest)
     return manifest
@@ -690,6 +693,7 @@ class TestPostModelLoad:
             state_dim=16,
             input_type="text",
             tokenizer="EleutherAI/gpt-neox-20b",
+            dtype="float32",
         )
         model_registry.register(other_manifest)
 
