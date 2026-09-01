@@ -1,0 +1,18 @@
+# tiiuae/falcon-mamba-7b: ~7B params in bfloat16 (~14GB total).
+# FalconMamba adds a weightless RMSNorm over B, C, and dt inside the mixer
+# (no extra learnable parameters), but keeps the same
+# backbone.layers.*/backbone.norm_f/lm_head tensor layout as vanilla Mamba.
+# Far too large for a single 4GB Pi node; needs many nodes to split the 64
+# layers across enough RAM.
+# layers/hidden_dim/state_dim below are taken directly from the real
+# checkpoint's config.json (num_hidden_layers, hidden_size, state_size).
+# Unlike the state-spaces/mamba-*-hf checkpoints, FalconMamba ships its own
+# tokenizer rather than sharing EleutherAI/gpt-neox-20b.
+name: falcon-mamba-7b
+arch: falcon-mamba
+checkpoint: tiiuae/falcon-mamba-7b
+layers: 64
+hidden_dim: 4096
+state_dim: 16
+input_type: text
+tokenizer: tiiuae/falcon-mamba-7b

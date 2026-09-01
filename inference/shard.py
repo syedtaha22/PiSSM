@@ -13,6 +13,10 @@ import torch
 from safetensors import safe_open
 from torch import nn
 from transformers.cache_utils import Cache, DynamicCache
+from transformers.models.falcon_mamba.modeling_falcon_mamba import (
+    FalconMambaBlock,
+    FalconMambaRMSNorm,
+)
 from transformers.models.mamba.modeling_mamba import MambaBlock, MambaRMSNorm
 
 from inference.weights import fetch_source_file
@@ -55,6 +59,12 @@ class MambaShardModule(nn.Module):
     The last shard applies the final norm and language model head after
     the assigned layers. Middle shards pass hidden states through unchanged.
 
+    Subclasses for architectures that reuse Mamba's backbone.layers.*/
+    backbone.norm_f/lm_head tensor layout (e.g. FalconMambaShardModule)
+    only need to override _block_cls and _norm_cls - forward,
+    tensor_locations_for_range, from_model, and new_cache are all
+    already architecture-agnostic.
+
     Parameters
     ----------
     layers : list[nn.Module]
@@ -78,6 +88,9 @@ class MambaShardModule(nn.Module):
         (smaller) layer count would raise IndexError the moment a
         non-zero-based layer_idx is used.
     """
+
+    _block_cls = MambaBlock
+    _norm_cls = MambaRMSNorm
 
     def __init__(
         self,
@@ -327,13 +340,13 @@ class MambaShardModule(nn.Module):
             tensors loaded.
         """
         layers = [
-            MambaBlock(config, layer_idx=i) for i in range(layer_start, layer_end)
+            cls._block_cls(config, layer_idx=i) for i in range(layer_start, layer_end)
         ]
         embeddings = (
             nn.Embedding(config.vocab_size, config.hidden_size) if is_first else None
         )
         norm_f = (
-            MambaRMSNorm(config.hidden_size, eps=config.layer_norm_epsilon)
+            cls._norm_cls(config.hidden_size, eps=config.layer_norm_epsilon)
             if is_last
             else None
         )
@@ -361,6 +374,22 @@ class MambaShardModule(nn.Module):
         return shard
 
 
+class FalconMambaShardModule(MambaShardModule):
+    """
+    A contiguous slice of a FalconMambaForCausalLM for pipeline-parallel use.
+
+    FalconMamba applies an extra (weightless) RMSNorm to B, C, and dt inside
+    the mixer's forward pass, but keeps the same backbone.layers.*/
+    backbone.norm_f/lm_head tensor layout as Mamba, so every method here is
+    inherited unchanged from MambaShardModule except the block/norm classes
+    used to build layers in from_tensor_locations.
+    """
+
+    _block_cls = FalconMambaBlock
+    _norm_cls = FalconMambaRMSNorm
+
+
 _ARCH_TO_SHARD_CLASS: dict[str, type] = {
     "mamba": MambaShardModule,
+    "falcon-mamba": FalconMambaShardModule,
 }

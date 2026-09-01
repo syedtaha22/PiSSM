@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 import yaml
 
-SUPPORTED_ARCHITECTURES = ("mamba", "s4", "llm-transformer")
+SUPPORTED_ARCHITECTURES = ("mamba", "falcon-mamba", "s4", "llm-transformer")
 SUPPORTED_INPUT_TYPES = ("text", "timeseries", "audio")
 REQUIRED_FIELDS = (
     "name",
@@ -42,7 +42,7 @@ class ModelManifest:
     name : str
         Unique model name, no spaces.
     arch : str
-        Model architecture: "mamba", "s4", or "llm-transformer".
+        Model architecture: "mamba", "falcon-mamba", "s4", or "llm-transformer".
     checkpoint : str
         HuggingFace model ID or local path to the checkpoint.
     layers : int

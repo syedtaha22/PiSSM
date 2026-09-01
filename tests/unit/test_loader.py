@@ -39,6 +39,22 @@ def make_manifest(arch="mamba"):
     )
 
 
+class TestArchToModelClass:
+    """
+    Tests for the _ARCH_TO_MODEL_CLASS registry.
+    """
+
+    def test_falcon_mamba_registered(self):
+        """
+        "falcon-mamba" resolves to transformers' FalconMambaForCausalLM.
+        """
+        from transformers import FalconMambaForCausalLM
+
+        from inference.loader import _ARCH_TO_MODEL_CLASS
+
+        assert _ARCH_TO_MODEL_CLASS["falcon-mamba"] is FalconMambaForCausalLM
+
+
 class TestLoadModel:
     """
     Tests for the load_model function.

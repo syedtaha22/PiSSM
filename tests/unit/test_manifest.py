@@ -121,6 +121,17 @@ class TestInvalidValues:
         with pytest.raises(ManifestError, match="arch"):
             load_manifest(path)
 
+    def test_falcon_mamba_arch_is_supported(self, tmp_path):
+        """
+        "falcon-mamba" is a supported architecture.
+        """
+        data = {**VALID_MANIFEST_DATA, "arch": "falcon-mamba"}
+        path = write_manifest(tmp_path, data)
+
+        manifest = load_manifest(path)
+
+        assert manifest.arch == "falcon-mamba"
+
     def test_unsupported_input_type(self, tmp_path):
         """
         An unsupported input type raises ManifestError.

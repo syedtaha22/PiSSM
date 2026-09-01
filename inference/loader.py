@@ -3,7 +3,7 @@ Model loader for HuggingFace models.
 
 Loads models and tokenizers from HuggingFace for inference on worker
 nodes. Handles warning suppression, CPU-only enforcement, and model
-residency management. Currently supports Mamba architecture only.
+residency management. Supports Mamba and FalconMamba architectures.
 """
 
 import gc
@@ -29,7 +29,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", message=".*unauthenticated requests.*")
 
-from transformers import AutoTokenizer, MambaForCausalLM
+from transformers import AutoTokenizer, FalconMambaForCausalLM, MambaForCausalLM
 
 from inference.manifest import ModelManifest
 
@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 _ARCH_TO_MODEL_CLASS = {
     "mamba": MambaForCausalLM,
+    "falcon-mamba": FalconMambaForCausalLM,
 }
 
 

@@ -9,12 +9,22 @@ so no real model weights are required.
 import pytest
 import torch
 from torch import nn
-from transformers import AutoConfig, MambaConfig, MambaForCausalLM
+from transformers import (
+    AutoConfig,
+    FalconMambaForCausalLM,
+    MambaConfig,
+    MambaForCausalLM,
+)
 
-from inference.shard import MambaShardModule
+from inference.shard import (
+    _ARCH_TO_SHARD_CLASS,
+    FalconMambaShardModule,
+    MambaShardModule,
+)
 from inference.weights import read_checkpoint_metadata
 
 DUMMY_CHECKPOINT = "checkpoints/dummy-mamba-tiny"
+DUMMY_FALCON_MAMBA_CHECKPOINT = "checkpoints/dummy-falcon-mamba-tiny"
 
 
 class IdentityLayer(nn.Module):
@@ -472,3 +482,95 @@ class TestFromTensorLocations:
             )
 
         assert mock_fetch.call_count == 1
+
+
+class TestFalconMambaShardModule:
+    """
+    Tests for FalconMambaShardModule, the FalconMamba counterpart of
+    MambaShardModule. FalconMamba reuses the same backbone.layers.*/
+    backbone.norm_f/lm_head tensor layout as Mamba, so forward,
+    tensor_locations_for_range, from_model, and new_cache are inherited
+    unchanged - these tests focus on what's actually different: which
+    block/norm classes get built, and that a real checkpoint round-trips.
+    """
+
+    def test_registered_for_falcon_mamba_arch(self):
+        """
+        "falcon-mamba" resolves to FalconMambaShardModule.
+        """
+        assert _ARCH_TO_SHARD_CLASS["falcon-mamba"] is FalconMambaShardModule
+
+    def test_uses_falcon_mamba_block_and_norm_classes(self):
+        """
+        from_tensor_locations builds FalconMambaBlock/FalconMambaRMSNorm
+        instances, not the plain Mamba ones.
+        """
+        from transformers.models.falcon_mamba.modeling_falcon_mamba import (
+            FalconMambaBlock,
+            FalconMambaRMSNorm,
+        )
+
+        config = AutoConfig.from_pretrained(DUMMY_FALCON_MAMBA_CHECKPOINT)
+        weight_map = read_checkpoint_metadata(DUMMY_FALCON_MAMBA_CHECKPOINT).weight_map
+        locations = FalconMambaShardModule.tensor_locations_for_range(
+            weight_map, layer_start=0, layer_end=2, is_first=False, is_last=True
+        )
+
+        shard = FalconMambaShardModule.from_tensor_locations(
+            config,
+            layer_start=0,
+            layer_end=2,
+            is_first=False,
+            is_last=True,
+            checkpoint=DUMMY_FALCON_MAMBA_CHECKPOINT,
+            tensor_locations=locations,
+        )
+
+        assert all(isinstance(layer, FalconMambaBlock) for layer in shard.layers)
+        assert isinstance(shard.norm_f, FalconMambaRMSNorm)
+
+    def test_matches_directly_loaded_reference_end_to_end(self):
+        """
+        Two shards built via from_tensor_locations, run in sequence,
+        produce the same logits as the directly loaded reference model -
+        the same round-trip guarantee MambaShardModule has, applied to
+        FalconMamba's checkpoint layout.
+        """
+        config = AutoConfig.from_pretrained(DUMMY_FALCON_MAMBA_CHECKPOINT)
+        weight_map = read_checkpoint_metadata(DUMMY_FALCON_MAMBA_CHECKPOINT).weight_map
+        reference = FalconMambaForCausalLM.from_pretrained(
+            DUMMY_FALCON_MAMBA_CHECKPOINT
+        )
+
+        first_locations = FalconMambaShardModule.tensor_locations_for_range(
+            weight_map, layer_start=0, layer_end=2, is_first=True, is_last=False
+        )
+        last_locations = FalconMambaShardModule.tensor_locations_for_range(
+            weight_map, layer_start=2, layer_end=4, is_first=False, is_last=True
+        )
+        first_shard = FalconMambaShardModule.from_tensor_locations(
+            config,
+            layer_start=0,
+            layer_end=2,
+            is_first=True,
+            is_last=False,
+            checkpoint=DUMMY_FALCON_MAMBA_CHECKPOINT,
+            tensor_locations=first_locations,
+        )
+        last_shard = FalconMambaShardModule.from_tensor_locations(
+            config,
+            layer_start=2,
+            layer_end=4,
+            is_first=False,
+            is_last=True,
+            checkpoint=DUMMY_FALCON_MAMBA_CHECKPOINT,
+            tensor_locations=last_locations,
+        )
+
+        input_ids = torch.randint(0, config.vocab_size, (1, 6))
+        with torch.no_grad():
+            hidden = first_shard(input_ids)
+            logits = last_shard(hidden)
+            reference_logits = reference(input_ids).logits
+
+        assert torch.allclose(logits, reference_logits, atol=1e-4)
